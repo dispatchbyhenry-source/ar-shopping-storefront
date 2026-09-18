@@ -192,6 +192,17 @@ def close_db(_error=None):
 
 def ensure_columns(table, columns):
     db = get_db()
+    # First check the table exists — if not, skip silently
+    table_check = db.execute(
+        """
+        SELECT 1 AS ok
+        FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = ?
+        """,
+        (table,),
+    ).fetchone()
+    if not table_check:
+        return
     existing = {
         row["column_name"]
         for row in db.execute(
@@ -423,7 +434,45 @@ def init_db():
             over_value DOUBLE PRECISION NOT NULL
         )
         """,
-    ]
+        """
+        CREATE TABLE IF NOT EXISTS product_listings (
+            id SERIAL PRIMARY KEY,
+            product_name TEXT NOT NULL,
+            sku TEXT NOT NULL,
+            condition TEXT,
+            main_category TEXT,
+            sub_category TEXT,
+            product_type TEXT,
+            product_weight_kg DOUBLE PRECISION DEFAULT 0,
+            packing_weight_kg DOUBLE PRECISION DEFAULT 0,
+            size_group TEXT,
+            size_value TEXT,
+            colours TEXT,
+            price_europe_eur DOUBLE PRECISION DEFAULT 0,
+            discount_europe_percent DOUBLE PRECISION DEFAULT 0,
+            price_pakistan_pkr DOUBLE PRECISION DEFAULT 0,
+            discount_pakistan_percent DOUBLE PRECISION DEFAULT 0,
+            region_visibility TEXT,
+            shipping_cost_germany DOUBLE PRECISION DEFAULT 0,
+            shipping_cost_europe DOUBLE PRECISION DEFAULT 0,
+            shipping_cost_america DOUBLE PRECISION DEFAULT 0,
+            shipping_cost_pakistan DOUBLE PRECISION DEFAULT 0,
+            express_shipping_charge DOUBLE PRECISION DEFAULT 10,
+            shipping_method TEXT,
+            description TEXT,
+            product_tags TEXT,
+            product_hashtags TEXT,
+            link_ebay TEXT,
+            link_etsy TEXT,
+            link_amazon TEXT,
+            picture_main TEXT,
+            picture_2 TEXT,
+            picture_3 TEXT,
+            pictures_extra TEXT,
+            created_at TIMESTAMP DEFAULT now(),
+            updated_at TIMESTAMP DEFAULT now()
+        )
+        """, ]
     for statement in statements:
         db.execute(statement)
     db.commit()
