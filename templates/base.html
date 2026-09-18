@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="{{ language }}" dir="{{ 'rtl' if language in ['ur','ar'] else 'ltr' }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{% block title %}AR Shopping World{% endblock %}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+  <style>
+    body{font-family:Outfit,sans-serif}
+    .star{color:#f59e0b}
+    .mega-menu{display:none}
+    .mega-trigger:hover .mega-menu,.mega-trigger:focus-within .mega-menu{display:block}
+  </style>
+</head>
+<body class="min-h-screen bg-[#fdf8f8] text-slate-800 flex flex-col">
+<div class="bg-red-950 text-red-100 text-xs py-2">
+  <div class="max-w-7xl mx-auto px-4 flex justify-between gap-3 flex-wrap">
+    <span><b class="bg-red-600 px-2 py-1 rounded">RED EDITION</b> Free delivery on qualifying orders · Secure checkout · Easy returns</span>
+    <span>Customer Care: support@arshoppingworld.com</span>
+  </div>
+</div>
+<header class="bg-white border-b border-red-100 sticky top-0 z-30">
+  <div class="max-w-7xl mx-auto px-4 py-3 flex items-center gap-5">
+    <a href="{{ url_for('home') }}" class="flex items-center gap-2 shrink-0">
+      <b class="bg-red-600 text-white text-xl p-2 rounded-xl">AR</b>
+      <span class="font-black leading-none">AR SHOPPING<br><small class="text-red-600 tracking-widest">WORLD</small></span>
+    </a>
+    <form action="{{ url_for('products') }}" class="hidden md:flex flex-1 max-w-xl relative">
+      <input name="search" value="{{ request.args.get('search','') }}" class="w-full bg-red-50 border border-red-100 rounded-xl px-4 py-3 text-sm" placeholder="Search shoes, jackets, shirts and more...">
+      <button class="absolute right-3 top-3 text-red-600"><i class="fa-solid fa-magnifying-glass"></i></button>
+    </form>
+    <form action="{{ url_for('preferences') }}" method="post" class="flex items-center gap-2 ml-auto text-xs">
+      <select name="currency" onchange="this.form.submit()" class="border border-red-100 rounded-lg p-2">
+        {% for key, value in currencies.items() %}
+        <option value="{{ key }}" {% if key==currency %}selected{% endif %}>{{ key }}</option>
+        {% endfor %}
+      </select>
+      <select name="language" onchange="this.form.submit()" class="border border-red-100 rounded-lg p-2 max-w-24">
+        {% for key, value in languages.items() %}
+        <option value="{{ key }}" {% if key==language %}selected{% endif %}>{{ value }}</option>
+        {% endfor %}
+      </select>
+      {% if current_user %}
+      <a href="{{ url_for('profile') }}" class="border border-red-100 rounded-xl px-3 py-2 font-bold">{{ current_user.name.split(' ')[0] }}</a>
+      {% else %}
+      <a href="{{ url_for('login') }}" class="border border-red-100 rounded-xl px-3 py-2 font-bold">Sign in</a>
+      {% endif %}
+      <a href="{{ url_for('cart') }}" class="bg-red-50 text-red-600 rounded-xl px-3 py-2"><i class="fa-solid fa-bag-shopping"></i> <b>{{ cart_count }}</b></a>
+    </form>
+    {% if current_user %}
+    <form method="post" action="{{ url_for('logout') }}" class="shrink-0">
+      <button class="border border-red-100 rounded-xl px-3 py-2 text-xs">Sign out</button>
+    </form>
+    {% endif %}
+  </div>
+  <nav class="bg-red-50 border-t border-red-100">
+    <div class="max-w-7xl mx-auto px-4 py-3 flex items-center gap-6 overflow-auto text-xs font-bold">
+      <a href="{{ url_for('home') }}">Home</a>
+      <div class="mega-trigger relative">
+        <button type="button">Shop Categories <i class="fa-solid fa-chevron-down text-[9px]"></i></button>
+        <div class="mega-menu absolute left-0 top-full bg-white border border-red-100 shadow-xl rounded-2xl p-5 z-40 w-[min(90vw,720px)]">
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-5">
+            {% for group in shop_nav %}
+            <div>
+              <a class="block text-red-700 font-black mb-2" href="{{ url_for('products', main=group.name) }}">{{ group.name }}</a>
+              <a class="block py-1 text-slate-500" href="{{ url_for('products', main=group.name) }}">Shop all {{ group.name }}</a>
+              {% for sub in group.subs %}
+              <a class="block py-1" href="{{ url_for('products', main=group.name, sub=sub) }}">{{ sub }}</a>
+              {% else %}
+              <span class="block py-1 text-slate-400 font-normal">No products yet</span>
+              {% endfor %}
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+      {% for group in shop_nav %}
+      <div class="mega-trigger relative">
+        <a href="{{ url_for('products', main=group.name) }}">{{ group.name }} <i class="fa-solid fa-chevron-down text-[9px]"></i></a>
+        <div class="mega-menu absolute left-0 top-full bg-white border border-red-100 shadow-xl rounded-xl min-w-[180px] p-3 z-40">
+          <a class="block py-1 text-red-700" href="{{ url_for('products', main=group.name) }}">All {{ group.name }}</a>
+          {% for sub in group.subs %}
+          <a class="block py-1" href="{{ url_for('products', main=group.name, sub=sub) }}">{{ sub }}</a>
+          {% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+      <a href="{{ url_for('products') }}">All Products</a>
+      <a href="{{ url_for('sell') }}">Sell Product</a>
+      <a href="{{ url_for('contact') }}">Contact</a>
+      {% if is_admin %}<a class="text-red-600" href="{{ url_for('admin_dashboard') }}">Admin</a>{% endif %}
+    </div>
+  </nav>
+</header>
+{% with messages=get_flashed_messages(with_categories=true) %}
+{% for category,message in messages %}
+<div class="max-w-7xl mx-auto w-full px-4 pt-4">
+  <div class="p-3 rounded-xl text-sm {{ 'bg-red-100 text-red-700' if category=='error' else 'bg-emerald-100 text-emerald-700' }}">{{ message }}</div>
+</div>
+{% endfor %}
+{% endwith %}
+{% block content %}{% endblock %}
+<footer class="mt-auto mt-12 bg-red-950 text-red-100 py-10">
+  <div class="max-w-7xl mx-auto px-4 grid sm:grid-cols-2 lg:grid-cols-4 gap-7 text-sm">
+    <div>
+      <b class="text-xl text-white">AR Shopping World</b>
+      <p class="text-red-200 mt-3 text-xs leading-relaxed">Premium shoes, clothing and leather goods curated for modern wardrobes.</p>
+    </div>
+    <div>
+      <b class="text-white">Shop</b>
+      {% for group in shop_nav %}
+      <a class="block mt-3 text-xs" href="{{ url_for('products', main=group.name) }}">{{ group.name }}</a>
+      {% endfor %}
+      <a class="block mt-2 text-xs" href="{{ url_for('products') }}">All products</a>
+      <a class="block mt-2 text-xs" href="{{ url_for('cart') }}">Shopping cart</a>
+    </div>
+    <div>
+      <b class="text-white">Customer care</b>
+      <a class="block mt-3 text-xs" href="{{ url_for('contact') }}">Contact support</a>
+      <a class="block mt-2 text-xs" href="{{ url_for('sell') }}">Vendor portal</a>
+      <a class="block mt-2 text-xs" href="{{ url_for('profile') if current_user else url_for('register') }}">Your profile</a>
+    </div>
+    <div>
+      <b class="text-white">Keep in touch</b>
+      <p class="mt-3 text-xs">support@arshoppingworld.com</p>
+      <p class="mt-2 text-xs">Mon–Sat, 9:00–18:00</p>
+    </div>
+  </div>
+  <p class="max-w-7xl mx-auto px-4 border-t border-red-900 mt-8 pt-5 text-xs text-red-300">© 2026 AR Shopping World. All rights reserved.</p>
+</footer>
+</body>
+</html>

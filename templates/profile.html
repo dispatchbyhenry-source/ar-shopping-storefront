@@ -1,0 +1,14 @@
+{% extends 'base.html' %}
+{% block title %}Your profile | AR Shopping World{% endblock %}
+{% block content %}
+<main class="max-w-lg mx-auto px-4 py-12 w-full">
+  <form method="post" class="bg-white border border-red-100 rounded-3xl p-7 space-y-4">
+    <h1 class="text-2xl font-black">Your profile</h1>
+    <p class="text-sm text-slate-500">Update your details used for contact and seller listings.</p>
+    <input required name="name" maxlength="100" value="{{ user.name }}" class="w-full border rounded-xl p-3 text-sm">
+    <input required type="email" name="email" value="{{ user.email }}" class="w-full border rounded-xl p-3 text-sm">
+    <input type="password" name="password" minlength="6" placeholder="New password (optional)" class="w-full border rounded-xl p-3 text-sm">
+    <button class="w-full bg-red-600 text-white font-bold py-3 rounded-xl">Save profile</button>
+  </form>
+</main>
+{% endblock %}

@@ -1,0 +1,35 @@
+{% extends 'base.html' %}
+{% block title %}Catalog{% if catalog_title %} · {{ catalog_title }}{% endif %} | AR Shopping World{% endblock %}
+{% block content %}
+<main class="max-w-7xl mx-auto w-full px-4 py-9">
+  <h1 class="text-2xl font-black">Shop Catalog{% if catalog_title %}: {{ catalog_title }}{% endif %}</h1>
+  <p class="text-slate-500 text-sm mb-5">Choose a main category, then a sub category.</p>
+
+  <div class="flex flex-wrap gap-2 mb-3">
+    <a href="{{ url_for('products') }}" class="px-3 py-2 rounded-lg text-xs font-bold {{ 'bg-red-600 text-white' if not selected_main and selected=='All' else 'bg-white border' }}">All</a>
+    {% for group in shop_nav %}
+    <a href="{{ url_for('products', main=group.name) }}" class="px-3 py-2 rounded-lg text-xs font-bold {{ 'bg-red-600 text-white' if selected_main==group.name else 'bg-white border' }}">{{ group.name }}</a>
+    {% endfor %}
+  </div>
+
+  {% if selected_main %}
+  <div class="flex flex-wrap gap-2 mb-7">
+    <a href="{{ url_for('products', main=selected_main) }}" class="px-3 py-2 rounded-lg text-xs font-bold {{ 'bg-red-950 text-white' if not selected_sub else 'bg-white border' }}">All {{ selected_main }}</a>
+    {% for sub in current_subs %}
+    <a href="{{ url_for('products', main=selected_main, sub=sub) }}" class="px-3 py-2 rounded-lg text-xs font-bold {{ 'bg-red-950 text-white' if selected_sub==sub else 'bg-white border' }}">{{ sub }}</a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="mb-7"></div>
+  {% endif %}
+
+  {% if products %}
+  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+    {% for p in products %}{% include '_card.html' %}{% endfor %}
+  </div>
+  {% else %}
+  <p class="bg-white border rounded-xl p-8 text-center">No products matched your search.</p>
+  {% endif %}
+</main>
+{% include '_currency.html' %}
+{% endblock %}

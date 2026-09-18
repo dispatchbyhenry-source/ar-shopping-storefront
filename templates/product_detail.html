@@ -1,0 +1,177 @@
+{% extends 'base.html' %}
+{% block title %}{{ product.name }} | AR Shopping World{% endblock %}
+{% block content %}
+<main class="max-w-6xl mx-auto px-4 py-10 w-full">
+  <section class="bg-white border border-red-100 rounded-3xl p-5 md:p-9 grid md:grid-cols-2 gap-8">
+    <div>
+      <img id="mainProductImage" src="{{ product.gallery[0] }}" alt="{{ product.name }}" class="w-full h-96 rounded-2xl object-cover transition">
+      <div class="flex flex-wrap gap-2 mt-3">
+        {% for image in product.gallery %}
+        <button type="button" data-image="{{ image }}" class="gallery-thumb border-2 border-transparent hover:border-red-600 rounded-lg overflow-hidden">
+          <img src="{{ image }}" class="w-16 h-16 object-cover" alt="">
+        </button>
+        {% endfor %}
+      </div>
+    </div>
+    <div>
+      <div class="flex justify-between text-xs">
+        <a href="{{ url_for('products', main=product.main_category, sub=product.sub_category or product.category) }}" class="bg-red-50 text-red-700 font-bold px-3 py-1 rounded-full">{{ product.main_category }} · {{ product.sub_category or product.category }}</a>
+        <span>SKU: {{ product.sku }}</span>
+      </div>
+      <h1 class="text-3xl font-black mt-4">{{ product.name }}</h1>
+      <p class="text-xs text-slate-500 mt-1">{{ product.condition_label }}{% if product.size_group %} · {{ product.size_group }}{% endif %}{% if product.product_type %} · {{ product.product_type }}{% endif %}</p>
+      <p class="star text-sm my-2">★★★★★ <b class="text-slate-700">{{ product.rating }}/5</b> <a href="#reviews" class="text-slate-400">{{ product.reviews_count }} reviews</a></p>
+      <div class="my-4">
+        {% if product.display_discount_percent %}
+        <span class="inline-block bg-red-600 text-white text-xs font-black px-2 py-1 rounded mb-2">-{{ product.display_discount_percent|int }}% off</span>
+        <div class="flex items-end gap-3">
+          <h2 class="price text-3xl font-black text-red-700" data-pkr="{{ product.display_price }}"></h2>
+          <span class="price text-lg text-slate-400 line-through" data-pkr="{{ product.display_original_price }}"></span>
+        </div>
+        {% else %}
+        <h2 class="price text-3xl font-black" data-pkr="{{ product.display_price }}"></h2>
+        {% endif %}
+      </div>
+      {% if product.weight or product.packing_weight %}
+      <p class="text-sm text-slate-500 mb-3">Weight: {{ '%.2f'|format(product.weight or 0) }} kg{% if product.packing_weight %} · Packing: {{ '%.2f'|format(product.packing_weight) }} kg{% endif %}</p>
+      {% endif %}
+      <p class="text-sm text-slate-600 whitespace-pre-line">{{ product.description }}</p>
+      {% if product.product_tags or product.product_hashtags %}
+      <div class="flex flex-wrap gap-2 mt-3">
+        {% for tag in product.product_tags %}
+        <a href="{{ url_for('products', search=tag) }}" class="text-[11px] font-bold bg-slate-100 text-slate-700 px-2 py-1 rounded-lg">{{ tag }}</a>
+        {% endfor %}
+        {% for tag in product.product_hashtags %}
+        <a href="{{ url_for('products', search=tag) }}" class="text-[11px] font-bold bg-red-50 text-red-700 px-2 py-1 rounded-lg">{{ tag }}</a>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      <form action="{{ url_for('add_cart',product_id=product.id) }}" method="post" class="mt-5 space-y-5">
+        <div>
+          <b class="text-xs uppercase text-slate-500">Colour & stock</b>
+          <div class="mt-2 flex flex-wrap gap-2">
+            {% for color in product.color_rows %}
+            <label class="cursor-pointer">
+              <input required class="peer sr-only color-choice" type="radio" name="color" value="{{ color.name }}" {% if color.quantity|int <= 0 %}disabled{% endif %}>
+              <span class="block border-2 rounded-xl px-4 py-3 text-sm font-bold peer-checked:border-red-600 peer-checked:bg-red-50 peer-disabled:opacity-40">{{ color.name }} · {{ color.quantity }} left</span>
+            </label>
+            {% endfor %}
+          </div>
+        </div>
+
+        <div>
+          <b class="text-xs uppercase text-slate-500">Size</b>
+          <div class="mt-2 flex flex-wrap gap-2">
+            {% for size in product.size_rows %}
+            <label class="cursor-pointer">
+              <input required class="peer sr-only size-choice" type="radio" name="size" value="{{ size }}">
+              <span class="size-label block min-w-20 text-center border-2 rounded-xl px-3 py-3 text-sm font-black peer-checked:border-red-600 peer-checked:bg-red-50 peer-disabled:opacity-40">{{ size }}</span>
+            </label>
+            {% endfor %}
+          </div>
+          <p id="variantStockMessage" class="text-xs text-slate-500 mt-2"></p>
+        </div>
+
+        <div class="grid sm:grid-cols-2 gap-3">
+          <button class="w-full bg-red-600 text-white font-bold rounded-xl py-3 text-sm">Buy now / Add to cart</button>
+          {% if product.has_marketplace_links %}
+          {% if product.ebay_url %}
+          <a target="_blank" rel="noopener" href="{{ product.ebay_url }}" class="w-full text-center border border-slate-300 rounded-xl py-3 text-sm font-bold hover:bg-slate-50">Check price on eBay</a>
+          {% endif %}
+          {% else %}
+          <button type="button" id="missingPlatforms" class="w-full text-center border border-slate-300 rounded-xl py-3 text-sm font-bold">Check price on other platforms</button>
+          {% endif %}
+        </div>
+        {% if product.has_marketplace_links %}
+        <div class="grid sm:grid-cols-2 gap-3">
+          {% if product.amazon_url %}
+          <a target="_blank" rel="noopener" href="{{ product.amazon_url }}" class="w-full text-center border border-amber-300 text-amber-800 rounded-xl py-3 text-sm font-bold hover:bg-amber-50">Check price on Amazon</a>
+          {% endif %}
+          {% if product.etsy_url %}
+          <a target="_blank" rel="noopener" href="{{ product.etsy_url }}" class="w-full text-center border border-orange-300 text-orange-800 rounded-xl py-3 text-sm font-bold hover:bg-orange-50">Check price on Etsy</a>
+          {% endif %}
+        </div>
+        {% else %}
+        <p id="missingPlatformsMessage" class="hidden text-sm text-red-600">Sorry currently this product is not available on other platforms for price comparison</p>
+        {% endif %}
+      </form>
+    </div>
+  </section>
+
+  <section id="reviews" class="mt-8 grid lg:grid-cols-2 gap-6">
+    <div class="bg-white border rounded-2xl p-6">
+      <h2 class="font-black text-xl">Customer reviews</h2>
+      {% for review in reviews %}
+      <article class="border-b py-4">
+        <span class="star">{% for _ in range(review.rating) %}★{% endfor %}</span>
+        <b class="text-sm ml-2">{{ review.name }}</b>
+        <small class="text-slate-400 ml-2">{{ review.created_at }}</small>
+        <p class="text-sm text-slate-600 mt-2">{{ review.body }}</p>
+      </article>
+      {% else %}
+      <p class="text-sm text-slate-500 mt-3">Be the first to review this product.</p>
+      {% endfor %}
+    </div>
+    <form action="{{ url_for('add_review',product_id=product.id) }}" method="post" class="bg-white border rounded-2xl p-6 space-y-3">
+      <h2 class="font-black text-xl">Write a review</h2>
+      <input required name="name" placeholder="Your name" class="w-full border rounded-xl p-3 text-sm">
+      <select name="rating" class="w-full border rounded-xl p-3 text-sm">
+        <option value="5">5 stars — Excellent</option>
+        <option value="4">4 stars — Very good</option>
+        <option value="3">3 stars — Good</option>
+        <option value="2">2 stars — Fair</option>
+        <option value="1">1 star — Poor</option>
+      </select>
+      <textarea required name="body" rows="4" placeholder="Tell customers about your experience" class="w-full border rounded-xl p-3 text-sm"></textarea>
+      <button class="bg-red-600 text-white rounded-xl px-5 py-3 font-bold text-sm">Publish review</button>
+    </form>
+  </section>
+
+  {% if related %}
+  <section class="mt-10">
+    <h2 class="font-black text-xl mb-4">You may also like</h2>
+    <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-5">
+      {% for p in related %}{% include '_card.html' %}{% endfor %}
+    </div>
+  </section>
+  {% endif %}
+</main>
+{% include '_currency.html' %}
+<script>
+document.querySelectorAll('.gallery-thumb').forEach(b => b.onclick = () => document.getElementById('mainProductImage').src = b.dataset.image);
+const variantStock = {{ product.color_rows|tojson }};
+const colorChoices = [...document.querySelectorAll('.color-choice')];
+const sizeChoices = [...document.querySelectorAll('.size-choice')];
+const stockMessage = document.getElementById('variantStockMessage');
+
+function updateSizeStock() {
+  const selectedColor = colorChoices.find(input => input.checked);
+  const color = variantStock.find(entry => selectedColor && entry.name === selectedColor.value);
+  sizeChoices.forEach(input => {
+    const available = color ? Number(color.sizes[input.value] || 0) : 0;
+    input.disabled = available <= 0;
+    input.nextElementSibling.textContent = `${input.value} · ${available} left`;
+    if (input.checked && input.disabled) input.checked = false;
+  });
+  const selectedSize = sizeChoices.find(input => input.checked && !input.disabled);
+  const firstAvailable = sizeChoices.find(input => !input.disabled);
+  if (!selectedSize && firstAvailable) firstAvailable.checked = true;
+  const activeSize = sizeChoices.find(input => input.checked);
+  const remaining = activeSize && color ? Number(color.sizes[activeSize.value] || 0) : 0;
+  stockMessage.textContent = activeSize ? `${remaining} items left in this colour and size.` : 'This colour is sold out.';
+}
+
+colorChoices.forEach(input => input.addEventListener('change', updateSizeStock));
+sizeChoices.forEach(input => input.addEventListener('change', updateSizeStock));
+const firstAvailableColor = colorChoices.find(input => !input.disabled);
+if (firstAvailableColor) {
+  firstAvailableColor.checked = true;
+  updateSizeStock();
+}
+const missing = document.getElementById('missingPlatforms');
+if (missing) {
+  missing.addEventListener('click', () => document.getElementById('missingPlatformsMessage').classList.remove('hidden'));
+}
+</script>
+{% endblock %}

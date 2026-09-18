@@ -1,0 +1,162 @@
+{% extends 'base.html' %}
+{% block title %}Admin Dashboard | AR Shopping World{% endblock %}
+{% block content %}
+<main class="max-w-7xl mx-auto px-4 py-9 w-full">
+  <div class="flex flex-wrap justify-between items-center gap-3 mb-7">
+    <div class="flex flex-wrap items-center gap-3">
+      <div>
+        <p class="text-red-600 font-bold text-xs">ADMINISTRATION</p>
+        <h1 class="text-3xl font-black">Store dashboard</h1>
+      </div>
+      <a href="#categories" class="border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm font-bold">Edit categories</a>
+      <a href="#shipping" class="border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm font-bold">Shipping charges</a>
+      <a href="{{ url_for('admin_product_new') }}" class="bg-red-600 text-white rounded-xl px-4 py-3 text-sm font-bold">+ Add product</a>
+    </div>
+    <form method="post" action="{{ url_for('admin_logout') }}">
+      <button class="border rounded-xl px-4 py-3 text-sm font-bold">Sign out</button>
+    </form>
+  </div>
+
+  <section id="categories" class="bg-white border rounded-2xl p-5 mb-7">
+    <h2 class="font-black text-lg mb-4">Categories</h2>
+    <form method="post" action="{{ url_for('admin_categories') }}" class="flex flex-wrap gap-2 mb-4">
+      <input type="hidden" name="action" value="add">
+      <input required name="name" maxlength="40" placeholder="New category name" class="border rounded-xl p-3 text-sm">
+      <button class="bg-red-600 text-white rounded-xl px-4 py-3 text-sm font-bold">Add category</button>
+    </form>
+    <div class="space-y-3">
+      {% for category in categories %}
+      <div class="flex flex-wrap gap-2 items-center border-t pt-3">
+        <form method="post" action="{{ url_for('admin_categories') }}" class="flex flex-wrap gap-2 grow">
+          <input type="hidden" name="action" value="rename">
+          <input type="hidden" name="category_id" value="{{ category.id }}">
+          <input required name="name" value="{{ category.name }}" maxlength="40" class="border rounded-xl p-2 text-sm grow min-w-[160px]">
+          <button class="text-red-600 text-sm font-bold">Save</button>
+        </form>
+        <form method="post" action="{{ url_for('admin_categories') }}" onsubmit="return confirm('Delete this category?')">
+          <input type="hidden" name="action" value="delete">
+          <input type="hidden" name="category_id" value="{{ category.id }}">
+          <button class="text-slate-500 text-sm">Delete</button>
+        </form>
+      </div>
+      {% else %}
+      <p class="text-sm text-slate-500">No categories yet.</p>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section id="shipping" class="bg-white border rounded-2xl p-5 mb-7">
+    <h2 class="font-black text-lg mb-2">Shipping charges</h2>
+    <p class="text-xs text-slate-500 mb-4">Four separate regions. Set under 5 kg and over 5 kg for each one.</p>
+    <form method="post" action="{{ url_for('admin_shipping') }}" class="space-y-4">
+      <div class="grid md:grid-cols-2 gap-4">
+        {% for zone in shipping_zones %}
+        <div class="border rounded-2xl p-4">
+          <h3 class="font-black text-base mb-1">{{ zone.name }}</h3>
+          <p class="text-xs text-slate-500 mb-3">Prices in {{ 'euros' if zone.unit == 'EUR' else 'rupees' }}.</p>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="text-xs font-bold text-slate-500">Under 5 kg</label>
+              <input required type="number" step="0.01" min="0" name="under_{{ zone.key }}" value="{{ zone.under }}" class="w-full border rounded-xl p-3 text-sm mt-1">
+            </div>
+            <div>
+              <label class="text-xs font-bold text-slate-500">Over 5 kg</label>
+              <input required type="number" step="0.01" min="0" name="over_{{ zone.key }}" value="{{ zone.over }}" class="w-full border rounded-xl p-3 text-sm mt-1">
+            </div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      <button class="bg-red-600 text-white rounded-xl px-5 py-3 text-sm font-bold">Save shipping charges</button>
+    </form>
+  </section>
+
+  <section class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+    {% for label,count in [('Products',products|length),('Recent orders',orders|length),('Reviews',reviews|length),('Messages',contacts|length)] %}
+    <div class="bg-white border rounded-2xl p-5">
+      <small class="text-slate-400">{{ label }}</small>
+      <b class="block text-3xl mt-1">{{ count }}</b>
+    </div>
+    {% endfor %}
+  </section>
+
+  <section class="bg-white border rounded-2xl p-5 mb-7 overflow-auto">
+    <div class="flex justify-between mb-4">
+      <h2 class="font-black text-lg">Products</h2>
+      <a class="text-red-600 text-sm" href="{{ url_for('admin_product_new') }}">Add product</a>
+    </div>
+    <table class="w-full text-left text-xs">
+      <thead class="text-slate-400">
+        <tr><th class="p-2">Product</th><th>SKU</th><th>Stock</th><th>Status</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for product in products %}
+        <tr class="border-t">
+          <td class="p-2 font-bold">{{ product.name }}</td>
+          <td>{{ product.sku }}</td>
+          <td>{{ product.stock }}</td>
+          <td>{{ 'Live' if product.active else 'Hidden' }}</td>
+          <td class="whitespace-nowrap">
+            <a class="text-red-600 mr-2" href="{{ url_for('admin_product_edit',product_id=product.id) }}">Edit</a>
+            <form method="post" action="{{ url_for('admin_product_delete',product_id=product.id) }}" class="inline" onsubmit="return confirm('Delete this product?')">
+              <button class="text-slate-500">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="grid lg:grid-cols-2 gap-7">
+    <div class="bg-white border rounded-2xl p-5 overflow-auto">
+      <h2 class="font-black text-lg mb-4">Recent orders</h2>
+      {% for order in orders %}
+      <div class="border-t py-3 text-xs">
+        <b>#{{ order.id }} · {{ order.customer_name }}</b>
+        <span class="block text-slate-500">{{ order.country }} · {{ order.payment_method }} · {{ order.currency }} {{ '%.2f'|format(order.total) }}</span>
+      </div>
+      {% else %}
+      <p class="text-sm text-slate-500">No orders yet.</p>
+      {% endfor %}
+    </div>
+    <div class="bg-white border rounded-2xl p-5 overflow-auto">
+      <h2 class="font-black text-lg mb-4">Recent reviews</h2>
+      {% for review in reviews %}
+      <div class="border-t py-3 text-xs">
+        <b>{{ review.product_name }} · {{ review.name }}</b>
+        <span class="star"> {{ '★' * review.rating }}</span>
+        <p class="text-slate-500 mt-1">{{ review.body }}</p>
+        <form method="post" action="{{ url_for('admin_review_delete',review_id=review.id) }}" class="mt-1">
+          <button class="text-red-600">Delete review</button>
+        </form>
+      </div>
+      {% else %}
+      <p class="text-sm text-slate-500">No reviews yet.</p>
+      {% endfor %}
+    </div>
+    <div class="bg-white border rounded-2xl p-5">
+      <h2 class="font-black text-lg mb-4">Contact messages</h2>
+      {% for contact in contacts %}
+      <div class="border-t py-3 text-xs">
+        <b>{{ contact.name }} · {{ contact.email }}</b>
+        <p class="text-slate-500 mt-1">{{ contact.message }}</p>
+      </div>
+      {% else %}
+      <p class="text-sm text-slate-500">No messages yet.</p>
+      {% endfor %}
+    </div>
+    <div class="bg-white border rounded-2xl p-5">
+      <h2 class="font-black text-lg mb-4">Seller listings</h2>
+      {% for listing in listings %}
+      <div class="border-t py-3 text-xs">
+        <b>{{ listing.title }} · {{ listing.seller_name }}</b>
+        <p class="text-slate-500 mt-1">{{ listing.category }} · {{ listing.price }}</p>
+      </div>
+      {% else %}
+      <p class="text-sm text-slate-500">No seller listings yet.</p>
+      {% endfor %}
+    </div>
+  </section>
+</main>
+{% endblock %}

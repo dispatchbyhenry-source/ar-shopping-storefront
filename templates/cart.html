@@ -1,0 +1,154 @@
+{% extends 'base.html' %}
+{% block content %}
+<main class="max-w-4xl mx-auto px-4 py-10 w-full">
+  <h1 class="text-2xl font-black mb-2">Secure Checkout</h1>
+  <p class="text-sm text-slate-500 mb-5">Choose a shipping region. Rates change if the order is over 5 kg.</p>
+  {% if items %}
+  <div class="grid lg:grid-cols-5 gap-6">
+    <div class="lg:col-span-3 bg-white rounded-2xl border divide-y">
+      {% for item in items %}
+      <div class="p-4 flex gap-4 items-center">
+        <img src="{{ item.image }}" class="w-16 h-16 rounded-lg object-cover" alt="{{ item.name }}">
+        <div class="grow">
+          <b class="text-sm">{{ item.name }}</b>
+          <p class="text-xs text-slate-500">Colour: {{ item.selected_color }} · Size: {{ item.selected_size }} · Qty: {{ item.quantity }}{% if item.weight %} · {{ '%.2f'|format(item.line_weight) }} kg{% endif %}</p>
+          <span class="price text-sm font-bold" data-pkr="{{ item.subtotal }}"></span>
+        </div>
+        <form method="post" action="{{ url_for('remove_cart', product_id=item.id) }}">
+          <input type="hidden" name="cart_key" value="{{ item.cart_key }}">
+          <button class="text-red-600 text-xs font-bold">Remove</button>
+        </form>
+      </div>
+      {% endfor %}
+    </div>
+    <aside class="lg:col-span-2 bg-red-950 text-white rounded-2xl p-6 h-fit">
+      <h2 class="font-black">Order summary</h2>
+      <div class="mt-4 space-y-3 text-sm">
+        <div class="flex justify-between"><span>Subtotal</span><span class="price" data-pkr="{{ total }}"></span></div>
+        <div class="flex justify-between"><span>Weight</span><span>{{ '%.2f'|format(cart_weight) }} kg</span></div>
+        <div class="flex justify-between"><span>Delivery</span><span id="shippingAmount" class="price" data-pkr="{{ shipping }}"></span></div>
+        <p id="shippingMessage" class="text-xs text-red-200">{{ shipping_label }}</p>
+        <div class="border-t border-red-800 pt-3 flex justify-between text-base font-black">
+          <span>Total</span><span id="grandAmount" class="price" data-pkr="{{ grand_total }}"></span>
+        </div>
+      </div>
+      <p class="mt-5 text-[11px] text-red-200">This order is {% if heavy_order %}over{% else %}under{% endif %} 5 kg, so the matching shipping band is applied.</p>
+    </aside>
+  </div>
+
+  <form method="post" class="bg-white border rounded-2xl p-6 mt-6 space-y-4">
+    <h2 class="font-black text-lg">Delivery & payment</h2>
+    <div class="grid sm:grid-cols-2 gap-3">
+      <input required name="name" placeholder="Full name" class="border rounded-xl p-3 text-sm">
+      <input required type="email" name="email" placeholder="Email address" class="border rounded-xl p-3 text-sm">
+    </div>
+    <textarea required name="address" placeholder="Street address, city and postal code" class="w-full border rounded-xl p-3 text-sm"></textarea>
+
+    <div>
+      <p class="font-bold text-sm mb-2">Shipping method</p>
+      <div class="grid sm:grid-cols-2 gap-3 mb-4">
+        <label class="block border-2 rounded-xl p-4 cursor-pointer has-[:checked]:border-red-600 has-[:checked]:bg-red-50">
+          <input required class="shipping-method accent-red-600" type="radio" name="shipping_method" value="standard" {% if shipping_method != 'express' %}checked{% endif %}>
+          <b class="text-sm ml-1">Standard shipping</b>
+        </label>
+        <label class="block border-2 rounded-xl p-4 cursor-pointer has-[:checked]:border-red-600 has-[:checked]:bg-red-50">
+          <input required class="shipping-method accent-red-600" type="radio" name="shipping_method" value="express" {% if shipping_method == 'express' %}checked{% endif %}>
+          <b class="text-sm ml-1">Express shipping</b>
+        </label>
+      </div>
+      <p class="font-bold text-sm mb-2">Shipping charges</p>
+      <p class="text-xs text-slate-500 mb-3">Choose one region. This order is {{ '%.2f'|format(cart_weight) }} kg.</p>
+      <div class="space-y-3">
+        {% for zone in shipping_zones %}
+        <label class="block border-2 rounded-2xl p-4 cursor-pointer has-[:checked]:border-red-600 has-[:checked]:bg-red-50">
+          <div class="flex items-start justify-between gap-3">
+            <div>
+              <input required class="shipping-zone accent-red-600" type="radio" name="country" value="{{ zone.name }}" data-standard="{{ zone.standard_amount }}" data-express="{{ zone.express_amount }}" data-under="{{ zone.under_label }}" data-over="{{ zone.over_label }}" data-express-under="{{ zone.express_under_label }}" data-express-over="{{ zone.express_over_label }}" {% if selected_country == zone.name %}checked{% endif %}>
+              <b class="text-base ml-1">{{ zone.name }}</b>
+            </div>
+            <span class="price zone-price text-sm font-black text-red-700" data-pkr="{{ zone.amount }}"></span>
+          </div>
+          <div class="grid grid-cols-2 gap-3 mt-3 text-xs text-slate-600">
+            <div class="border rounded-xl p-3 bg-white">
+              <span class="block font-bold text-slate-400 uppercase band-under-title">{% if shipping_method == 'express' %}Express {% endif %}Under 5 kg</span>
+              <span class="block mt-1 font-black text-slate-800 zone-under">{{ zone.express_under_label if shipping_method == 'express' else zone.under_label }}</span>
+            </div>
+            <div class="border rounded-xl p-3 bg-white">
+              <span class="block font-bold text-slate-400 uppercase band-over-title">{% if shipping_method == 'express' %}Express {% endif %}Over 5 kg</span>
+              <span class="block mt-1 font-black text-slate-800 zone-over">{{ zone.express_over_label if shipping_method == 'express' else zone.over_label }}</span>
+            </div>
+          </div>
+        </label>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div>
+      <p class="font-bold text-sm mb-2">Payment method</p>
+      <label class="block border rounded-xl p-3 mb-2 cursor-pointer">
+        <input required type="radio" name="payment_method" value="pay_on_delivery" checked>
+        <b class="text-sm">Pay on delivery</b>
+        <span class="block text-xs text-slate-500 ml-5">Pay when your order is delivered.</span>
+      </label>
+      <label class="block border rounded-xl p-3 cursor-pointer">
+        <input required type="radio" name="payment_method" value="bank_transfer">
+        <b class="text-sm">Bank transfer</b>
+        <span class="block text-xs text-slate-500 ml-5">Bank instructions are sent after the order is placed.</span>
+      </label>
+    </div>
+    <div class="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-800">
+      Card and PayPal payments require the client’s Stripe/PayPal merchant credentials before they can be activated securely.
+    </div>
+    <button class="w-full bg-red-600 text-white rounded-xl py-3 font-bold">Place order</button>
+  </form>
+  {% else %}
+  <div class="bg-white border rounded-2xl p-10 text-center">
+    <p>Your cart is empty.</p>
+    <a class="inline-block mt-4 bg-red-600 text-white px-4 py-2 rounded-xl text-sm" href="{{ url_for('products') }}">Shop products</a>
+  </div>
+  {% endif %}
+</main>
+{% include '_currency.html' %}
+{% if items %}
+<script>
+const subtotalPkr = {{ total }};
+const heavyOrder = {{ 'true' if heavy_order else 'false' }};
+const cartWeight = {{ cart_weight }};
+function formatMoney(pkr) {
+  return new Intl.NumberFormat(undefined, {style: 'currency', currency}).format(Number(pkr) * rates[currency]);
+}
+function selectedMethod() {
+  return document.querySelector('.shipping-method:checked')?.value || 'standard';
+}
+function updateShippingSummary() {
+  const method = selectedMethod();
+  const express = method === 'express';
+  document.querySelectorAll('.shipping-zone').forEach(input => {
+    const card = input.closest('label');
+    const amount = Number(express ? input.dataset.express : input.dataset.standard);
+    const priceEl = card.querySelector('.zone-price');
+    priceEl.dataset.pkr = amount;
+    priceEl.textContent = formatMoney(amount);
+    card.querySelector('.zone-under').textContent = express ? input.dataset.expressUnder : input.dataset.under;
+    card.querySelector('.zone-over').textContent = express ? input.dataset.expressOver : input.dataset.over;
+    card.querySelector('.band-under-title').textContent = (express ? 'Express ' : '') + 'Under 5 kg';
+    card.querySelector('.band-over-title').textContent = (express ? 'Express ' : '') + 'Over 5 kg';
+  });
+  const selected = document.querySelector('.shipping-zone:checked');
+  if (!selected) return;
+  const shipping = Number(express ? selected.dataset.express : selected.dataset.standard);
+  const currentLabel = heavyOrder
+    ? (express ? selected.dataset.expressOver : selected.dataset.over)
+    : (express ? selected.dataset.expressUnder : selected.dataset.under);
+  const speed = express ? 'Express' : 'Standard';
+  const band = heavyOrder ? 'over 5 kg' : 'under 5 kg';
+  document.getElementById('shippingAmount').textContent = formatMoney(shipping);
+  document.getElementById('grandAmount').textContent = formatMoney(subtotalPkr + shipping);
+  document.getElementById('shippingMessage').textContent = `${selected.value} ${speed} delivery — ${currentLabel} (${band}, ${cartWeight} kg)`;
+}
+document.querySelectorAll('.shipping-zone').forEach(input => input.addEventListener('change', updateShippingSummary));
+document.querySelectorAll('.shipping-method').forEach(input => input.addEventListener('change', updateShippingSummary));
+updateShippingSummary();
+</script>
+{% endif %}
+{% endblock %}

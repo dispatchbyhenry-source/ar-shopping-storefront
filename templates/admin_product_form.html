@@ -1,0 +1,322 @@
+{% extends 'base.html' %}
+{% block title %}{{ 'Edit' if product else 'New' }} Product | Admin{% endblock %}
+{% block content %}
+<main class="max-w-5xl mx-auto px-4 py-10 w-full">
+  <div class="flex justify-between items-center mb-5">
+    <h1 class="text-2xl font-black">{{ 'Edit product' if product else 'Add product' }}</h1>
+    <a href="{{ url_for('admin_dashboard') }}" class="text-red-600 text-sm font-bold">← Dashboard</a>
+  </div>
+  <form method="post" enctype="multipart/form-data" class="bg-white border rounded-3xl p-6 space-y-5">
+    <div class="border rounded-xl p-4">
+      <b class="text-sm">Product images</b>
+      <p class="text-xs text-slate-500 mb-3">Upload JPG, PNG or WEBP. Image 1 is the main product image.</p>
+      <div class="grid sm:grid-cols-2 gap-3">
+        <label class="text-xs">Image 1 (main)<input type="file" name="main_image" accept="image/jpeg,image/png,image/webp" class="block mt-1 text-xs"></label>
+        {% for index in range(2, 11) %}
+        <label class="text-xs">Image {{ index }}<input type="file" name="image_{{ index }}" accept="image/jpeg,image/png,image/webp" class="block mt-1 text-xs"></label>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div>
+      <label class="text-xs font-bold text-slate-500">Product name</label>
+      <input required name="name" maxlength="100" value="{{ product.name if product else '' }}" placeholder="Product name" class="w-full border rounded-xl p-3 text-sm mt-1">
+    </div>
+
+    <div>
+      <label class="text-xs font-bold text-slate-500">SKU / Product Number</label>
+      <input required name="sku" maxlength="50" value="{{ product.sku if product else '' }}" placeholder="e.g. AR-SHO-03" class="w-full border rounded-xl p-3 text-sm mt-1">
+    </div>
+
+    <div class="border rounded-xl p-4">
+      <b class="text-sm">Product condition</b>
+      <p class="text-xs text-slate-500 mb-3">Admin only. Select one.</p>
+      <div class="flex flex-wrap gap-3">
+        {% for value, label in conditions %}
+        <label class="cursor-pointer">
+          <input required class="peer sr-only" type="radio" name="condition" value="{{ value }}" {% if (product and product.condition==value) or (not product and value=='new_with_tag') %}checked{% endif %}>
+          <span class="block border-2 rounded-xl px-4 py-3 text-sm font-bold peer-checked:border-red-600 peer-checked:bg-red-50">{{ label }}</span>
+        </label>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="grid sm:grid-cols-2 gap-4">
+      <div>
+        <label class="text-xs font-bold text-slate-500">Main category</label>
+        <select required name="main_category" class="w-full border rounded-xl p-3 text-sm mt-1">
+          {% for category in main_categories %}
+          <option value="{{ category }}" {% if product and product.main_category==category %}selected{% endif %}>{{ category }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label class="text-xs font-bold text-slate-500">Sub category</label>
+        <select required name="sub_category" id="subCategory" class="w-full border rounded-xl p-3 text-sm mt-1">
+          {% for type_name, options in sub_categories.items() %}
+            {% for option in options %}
+            <option value="{{ option }}" data-type="{{ type_name }}" {% if product and product.sub_category==option %}selected{% endif %}>{{ option }}</option>
+            {% endfor %}
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
+    <div>
+      <label class="text-xs font-bold text-slate-500">Product type</label>
+      <select required name="product_type" id="productType" class="w-full border rounded-xl p-3 text-sm mt-1">
+        {% for type_name in product_types %}
+        <option value="{{ type_name }}" {% if product and product.product_type==type_name %}selected{% endif %}>{{ type_name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="grid sm:grid-cols-2 gap-4">
+      <div>
+        <label class="text-xs font-bold text-slate-500">Product weight (kg)</label>
+        <input type="number" step="0.01" min="0" name="weight" value="{{ product.weight if product else '' }}" placeholder="e.g. 0.45" class="w-full border rounded-xl p-3 text-sm mt-1">
+      </div>
+      <div>
+        <label class="text-xs font-bold text-slate-500">Packing weight (kg)</label>
+        <input type="number" step="0.01" min="0" name="packing_weight" value="{{ product.packing_weight if product else '' }}" placeholder="e.g. 0.20" class="w-full border rounded-xl p-3 text-sm mt-1">
+      </div>
+    </div>
+
+    <div>
+      <label class="text-xs font-bold text-slate-500">Size group</label>
+      <select required name="size_group" class="w-full border rounded-xl p-3 text-sm mt-1">
+        {% for group in size_groups %}
+        <option value="{{ group }}" {% if product and product.size_group==group %}selected{% endif %}>{{ group }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="border rounded-xl p-4">
+      <b class="text-sm">Available sizes</b>
+      <p class="text-xs text-slate-500 mb-3">Sizes change with product type. Tick every size this product offers.</p>
+      {% for type_name, slots in size_slots_by_type.items() %}
+      <div class="size-group mb-3" data-type="{{ type_name }}">
+        <p class="text-xs font-bold text-slate-400 mb-2">{{ type_name }}</p>
+        <div class="flex flex-wrap gap-2">
+          {% for size in slots %}
+          <label class="cursor-pointer">
+            <input type="checkbox" name="size_{{ size.name }}" value="1" class="peer sr-only size-check" data-type="{{ type_name }}" {% if size.selected %}checked{% endif %}>
+            <span class="block min-w-12 text-center border-2 rounded-xl px-3 py-2 text-xs font-black peer-checked:border-red-600 peer-checked:bg-red-50">{{ size.name }}</span>
+          </label>
+          {% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+      <div class="shoe-extra mt-3">
+        <label class="text-xs font-bold text-slate-500">Extra shoe sizes (editable)</label>
+        <input name="custom_shoe_sizes" value="{{ custom_shoe_sizes }}" placeholder="Add extra sizes, comma separated, e.g. 48, 49" class="w-full border rounded-xl p-3 text-sm mt-1">
+      </div>
+    </div>
+
+    <div class="border rounded-xl p-4">
+      <b class="text-sm">Colours and stock by size</b>
+      <p class="text-xs text-slate-500 mb-3">Clothes: XXS–7XL · Shoes: 24–47 · Accessories: 10cm–50cm</p>
+      <div class="overflow-auto">
+        <table class="w-full text-sm" id="stockTable">
+          <thead>
+            <tr class="text-left text-slate-500 text-xs">
+              <th class="p-2">#</th>
+              <th class="p-2 min-w-40">Colour name</th>
+              {% for type_name, slots in size_slots_by_type.items() %}
+                {% for size in slots %}
+                <th class="p-2 text-center size-col" data-type="{{ type_name }}" data-size="{{ size.name }}">{{ size.name }}</th>
+                {% endfor %}
+              {% endfor %}
+            </tr>
+          </thead>
+          <tbody>
+            {% for slot in color_slots %}
+            {% set color_index = loop.index %}
+            <tr class="border-t">
+              <td class="p-2 text-slate-400">{{ color_index }}</td>
+              <td class="p-2"><input name="color_name_{{ color_index }}" value="{{ slot.name }}" maxlength="40" placeholder="e.g. Black" class="w-full border rounded-lg p-2 text-sm"></td>
+              {% for type_name, slots in size_slots_by_type.items() %}
+                {% for size in slots %}
+                <td class="p-2 size-col" data-type="{{ type_name }}" data-size="{{ size.name }}">
+                  <input type="number" min="0" name="color_stock_{{ color_index }}_{{ size.name }}" value="{{ slot.sizes[size.name] }}" placeholder="0" class="w-16 border rounded-lg p-2 text-center text-sm">
+                </td>
+                {% endfor %}
+              {% endfor %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div>
+      <label class="text-xs font-bold text-slate-500">Description</label>
+      <textarea required name="description" maxlength="3000" rows="5" placeholder="Product description" class="w-full border rounded-xl p-3 text-sm mt-1">{{ product.description if product else '' }}</textarea>
+    </div>
+
+    <div class="border rounded-xl p-4">
+      <b class="text-sm">Tags and hashtags</b>
+      <p class="text-xs text-slate-500 mb-3">Keywords for search. Separate with commas, up to 10 each.</p>
+      <div class="grid sm:grid-cols-2 gap-4">
+        <div>
+          <label class="text-xs font-bold text-slate-500">Product tags</label>
+          <input name="product_tags" value="{{ product.tags_text if product else '' }}" placeholder="e.g. leather, biker, winter" class="w-full border rounded-xl p-3 text-sm mt-1">
+        </div>
+        <div>
+          <label class="text-xs font-bold text-slate-500">Hashtags</label>
+          <input name="product_hashtags" value="{{ product.hashtags_text if product else '' }}" placeholder="e.g. #leatherjacket, #menswear" class="w-full border rounded-xl p-3 text-sm mt-1">
+        </div>
+      </div>
+    </div>
+
+    <div class="border rounded-xl p-4">
+      <b class="text-sm">Basic price</b>
+      <p class="text-xs text-slate-500 mb-3">International price for EUR/USD customers.</p>
+      <input required type="number" step="0.01" min="0.01" id="productPrice" name="price" value="{{ product.original_price if product else '' }}" class="w-full border rounded-xl p-3 text-sm mt-1">
+    </div>
+
+    <div class="border rounded-xl p-4">
+      <b class="text-sm">Discount (international)</b>
+      <div class="grid sm:grid-cols-2 gap-4 mt-3">
+        <div>
+          <label class="text-xs font-bold text-slate-500">Discount %</label>
+          <input type="number" step="0.01" min="0" max="100" id="productDiscount" name="discount_percent" value="{{ product.discount_percent if product else 0 }}" class="w-full border rounded-xl p-3 text-sm mt-1">
+        </div>
+        <div>
+          <label class="text-xs font-bold text-slate-500">Price after discount</label>
+          <p id="discountedPricePreview" class="w-full border rounded-xl p-3 text-sm mt-1 bg-red-50 font-black text-red-700">—</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="border rounded-xl p-4">
+      <b class="text-sm">Pakistan price and discount</b>
+      <p class="text-xs text-slate-500 mb-3">Shown to Pakistani customers (PKR or Urdu).</p>
+      <div class="grid sm:grid-cols-2 gap-4">
+        <div>
+          <label class="text-xs font-bold text-slate-500">Price in rupees (Rs)</label>
+          <input type="number" step="1" min="0" id="pakistanPrice" name="pakistan_price" value="{{ product.pakistan_original_price if product else '' }}" placeholder="e.g. 4500" class="w-full border rounded-xl p-3 text-sm mt-1">
+        </div>
+        <div>
+          <label class="text-xs font-bold text-slate-500">Pakistan discount %</label>
+          <input type="number" step="0.01" min="0" max="100" id="pakistanDiscount" name="pakistan_discount_percent" value="{{ product.pakistan_discount_percent if product else 0 }}" class="w-full border rounded-xl p-3 text-sm mt-1">
+        </div>
+        <div class="sm:col-span-2">
+          <label class="text-xs font-bold text-slate-500">Pakistan price after discount</label>
+          <p id="pakistanDiscountedPreview" class="w-full border rounded-xl p-3 text-sm mt-1 bg-red-50 font-black text-red-700">—</p>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <label class="text-xs font-bold text-slate-500">Where to show this product</label>
+      <select required name="region_visibility" class="w-full border rounded-xl p-3 text-sm mt-1">
+        {% for value, label in region_options %}
+        <option value="{{ value }}" {% if (product and product.region_visibility==value) or (not product and value=='all') %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="border rounded-xl p-4">
+      <b class="text-sm">Shipping charges</b>
+      <p class="text-xs text-slate-500 mb-3">Standard and express prices for under 5 kg and over 5 kg.</p>
+      <div class="overflow-auto">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="text-left text-xs text-slate-500">
+              <th class="p-2">Region</th>
+              <th class="p-2">Under 5 kg</th>
+              <th class="p-2">Over 5 kg</th>
+              <th class="p-2">Express under 5 kg</th>
+              <th class="p-2">Express over 5 kg</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for zone in shipping_slots %}
+            <tr class="border-t">
+              <td class="p-2 font-bold">{{ zone.name }} <span class="text-xs font-normal text-slate-400">({{ 'EUR' if zone.unit=='EUR' else 'Rs' }})</span></td>
+              <td class="p-2"><input type="number" min="0" step="0.01" name="ship_under_{{ zone.key }}" value="{{ zone.under }}" class="w-24 border rounded-lg p-2 text-sm"></td>
+              <td class="p-2"><input type="number" min="0" step="0.01" name="ship_over_{{ zone.key }}" value="{{ zone.over }}" class="w-24 border rounded-lg p-2 text-sm"></td>
+              <td class="p-2"><input type="number" min="0" step="0.01" name="ship_express_under_{{ zone.key }}" value="{{ zone.express_under }}" class="w-24 border rounded-lg p-2 text-sm"></td>
+              <td class="p-2"><input type="number" min="0" step="0.01" name="ship_express_over_{{ zone.key }}" value="{{ zone.express_over }}" class="w-24 border rounded-lg p-2 text-sm"></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="border rounded-xl p-4">
+      <b class="text-sm">Check price on other platforms</b>
+      <p class="text-xs text-slate-500 mb-3">Paste Amazon, Etsy, and eBay product URLs.</p>
+      <p class="text-xs bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-3 mb-3">If a link is not available in the product listing and a customer clicks Check price on other platforms, this message will appear: “Sorry currently this product is not available on other platforms for price comparison”</p>
+      <div class="space-y-3">
+        <input name="amazon_url" value="{{ product.amazon_url if product else '' }}" placeholder="Amazon link" class="w-full border rounded-xl p-3 text-sm">
+        <input name="etsy_url" value="{{ product.etsy_url if product else '' }}" placeholder="Etsy link" class="w-full border rounded-xl p-3 text-sm">
+        <input name="ebay_url" value="{{ product.ebay_url if product else '' }}" placeholder="eBay link" class="w-full border rounded-xl p-3 text-sm">
+      </div>
+    </div>
+
+    {% if product %}
+    <label class="text-sm"><input type="checkbox" name="active" {% if product.active %}checked{% endif %}> Visible in store</label>
+    {% endif %}
+    <button class="w-full bg-red-600 text-white rounded-xl py-3 font-bold">{{ 'Save product changes' if product else 'Create product' }}</button>
+  </form>
+</main>
+<script>
+const subCategories = {{ sub_categories|tojson }};
+const productType = document.getElementById('productType');
+const subCategory = document.getElementById('subCategory');
+
+function updateSubCategories() {
+  const type = productType.value;
+  const current = subCategory.value;
+  [...subCategory.options].forEach(option => {
+    const show = option.dataset.type === type;
+    option.hidden = !show;
+    option.disabled = !show;
+  });
+  const visible = [...subCategory.options].find(option => !option.disabled);
+  if (![...subCategory.options].some(option => option.value === current && !option.disabled) && visible) {
+    subCategory.value = visible.value;
+  }
+}
+
+function updateTypeSections() {
+  const type = productType.value;
+  document.querySelectorAll('.size-group').forEach(group => {
+    group.classList.toggle('hidden', group.dataset.type !== type);
+  });
+  document.querySelector('.shoe-extra').classList.toggle('hidden', type !== 'Shoes');
+  document.querySelectorAll('.size-col').forEach(cell => {
+    cell.classList.toggle('hidden', cell.dataset.type !== type);
+  });
+  updateSubCategories();
+}
+
+function updateDiscountPreview() {
+  const price = Number(document.getElementById('productPrice').value || 0);
+  const discount = Math.min(100, Math.max(0, Number(document.getElementById('productDiscount').value || 0)));
+  const sale = price * (100 - discount) / 100;
+  document.getElementById('discountedPricePreview').textContent = price > 0
+    ? sale.toFixed(2) + (discount > 0 ? ` after ${discount}% off` : '')
+    : 'Enter a price to preview';
+}
+function updatePakistanDiscountPreview() {
+  const price = Number(document.getElementById('pakistanPrice').value || 0);
+  const discount = Math.min(100, Math.max(0, Number(document.getElementById('pakistanDiscount').value || 0)));
+  const sale = price * (100 - discount) / 100;
+  document.getElementById('pakistanDiscountedPreview').textContent = price > 0
+    ? `Rs ${sale.toFixed(0)}` + (discount > 0 ? ` after ${discount}% off` : '')
+    : 'Enter a Pakistan price to preview';
+}
+productType.addEventListener('change', updateTypeSections);
+document.getElementById('productPrice').addEventListener('input', updateDiscountPreview);
+document.getElementById('productDiscount').addEventListener('input', updateDiscountPreview);
+document.getElementById('pakistanPrice').addEventListener('input', updatePakistanDiscountPreview);
+document.getElementById('pakistanDiscount').addEventListener('input', updatePakistanDiscountPreview);
+updateTypeSections();
+updateDiscountPreview();
+updatePakistanDiscountPreview();
+</script>
+{% endblock %}
