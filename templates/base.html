@@ -10,9 +10,13 @@
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
   <style>
     body{font-family:Outfit,sans-serif}
+    html{scroll-padding-top:8rem}
     .star{color:#f59e0b}
-    .mega-menu{display:none}
+    header{overflow:visible}
+    .mega-trigger{position:static}
+    .mega-menu{display:none;position:absolute;left:0;right:0;top:100%;z-index:80}
     .mega-trigger:hover .mega-menu,.mega-trigger:focus-within .mega-menu{display:block}
+    .mega-menu-inner{max-width:80rem;margin:0 auto;padding:1rem 1rem 1.25rem}
   </style>
 </head>
 <body class="min-h-screen bg-[#fdf8f8] text-slate-800 flex flex-col">
@@ -22,7 +26,7 @@
     <span>Customer Care: support@arshoppingworld.com</span>
   </div>
 </div>
-<header class="bg-white border-b border-red-100 sticky top-0 z-30">
+<header class="bg-white border-b border-red-100 sticky top-0 z-50">
   <div class="max-w-7xl mx-auto px-4 py-3 flex items-center gap-5">
     <a href="{{ url_for('home') }}" class="flex items-center gap-2 shrink-0">
       <b class="bg-red-600 text-white text-xl p-2 rounded-xl">AR</b>
@@ -33,6 +37,11 @@
       <button class="absolute right-3 top-3 text-red-600"><i class="fa-solid fa-magnifying-glass"></i></button>
     </form>
     <form action="{{ url_for('preferences') }}" method="post" class="flex items-center gap-2 ml-auto text-xs">
+      <select name="region" onchange="this.form.submit()" class="border border-red-100 rounded-lg p-2 max-w-32" title="Delivering to {{ customer_location_source }}">
+        {% for zone in shipping_regions %}
+        <option value="{{ zone }}" {% if zone==customer_region %}selected{% endif %}>{{ zone }}</option>
+        {% endfor %}
+      </select>
       <select name="currency" onchange="this.form.submit()" class="border border-red-100 rounded-lg p-2">
         {% for key, value in currencies.items() %}
         <option value="{{ key }}" {% if key==currency %}selected{% endif %}>{{ key }}</option>
@@ -57,12 +66,12 @@
     {% endif %}
   </div>
   <nav class="bg-red-50 border-t border-red-100">
-    <div class="max-w-7xl mx-auto px-4 py-3 flex items-center gap-6 overflow-auto text-xs font-bold">
+    <div class="max-w-7xl mx-auto px-4 py-3 flex items-center gap-6 overflow-x-auto text-xs font-bold">
       <a href="{{ url_for('home') }}">Home</a>
-      <div class="mega-trigger relative">
+      <div class="mega-trigger">
         <button type="button">Shop Categories <i class="fa-solid fa-chevron-down text-[9px]"></i></button>
-        <div class="mega-menu absolute left-0 top-full bg-white border border-red-100 shadow-xl rounded-2xl p-5 z-40 w-[min(90vw,720px)]">
-          <div class="grid grid-cols-2 sm:grid-cols-4 gap-5">
+        <div class="mega-menu bg-white border-t border-red-100 shadow-xl">
+          <div class="mega-menu-inner grid grid-cols-2 sm:grid-cols-4 gap-5">
             {% for group in shop_nav %}
             <div>
               <a class="block text-red-700 font-black mb-2" href="{{ url_for('products', main=group.name) }}">{{ group.name }}</a>
@@ -78,13 +87,15 @@
         </div>
       </div>
       {% for group in shop_nav %}
-      <div class="mega-trigger relative">
+      <div class="mega-trigger">
         <a href="{{ url_for('products', main=group.name) }}">{{ group.name }} <i class="fa-solid fa-chevron-down text-[9px]"></i></a>
-        <div class="mega-menu absolute left-0 top-full bg-white border border-red-100 shadow-xl rounded-xl min-w-[180px] p-3 z-40">
-          <a class="block py-1 text-red-700" href="{{ url_for('products', main=group.name) }}">All {{ group.name }}</a>
-          {% for sub in group.subs %}
-          <a class="block py-1" href="{{ url_for('products', main=group.name, sub=sub) }}">{{ sub }}</a>
-          {% endfor %}
+        <div class="mega-menu bg-white border-t border-red-100 shadow-xl">
+          <div class="mega-menu-inner">
+            <a class="block py-1 text-red-700 font-bold" href="{{ url_for('products', main=group.name) }}">All {{ group.name }}</a>
+            {% for sub in group.subs %}
+            <a class="block py-1" href="{{ url_for('products', main=group.name, sub=sub) }}">{{ sub }}</a>
+            {% endfor %}
+          </div>
         </div>
       </div>
       {% endfor %}
@@ -92,6 +103,7 @@
       <a href="{{ url_for('sell') }}">Sell Product</a>
       <a href="{{ url_for('contact') }}">Contact</a>
       {% if is_admin %}<a class="text-red-600" href="{{ url_for('admin_dashboard') }}">Admin</a>{% endif %}
+      {% if is_pl %}<a class="text-red-600" href="{{ url_for('pl_dashboard') }}">Listing team</a>{% endif %}
     </div>
   </nav>
 </header>
@@ -103,7 +115,7 @@
 {% endfor %}
 {% endwith %}
 {% block content %}{% endblock %}
-<footer class="mt-auto mt-12 bg-red-950 text-red-100 py-10">
+<footer class="mt-auto bg-red-950 text-red-100 py-10">
   <div class="max-w-7xl mx-auto px-4 grid sm:grid-cols-2 lg:grid-cols-4 gap-7 text-sm">
     <div>
       <b class="text-xl text-white">AR Shopping World</b>

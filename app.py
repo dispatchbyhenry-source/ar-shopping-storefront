@@ -1,5 +1,9 @@
+import ast
 import json
 import os
+import shutil
+import urllib.error
+import urllib.request
 from datetime import datetime
 from functools import wraps
 
@@ -71,6 +75,84 @@ DEFAULT_SHIPPING_ZONES = [
     {"name": "Canada/USA", "key": "canada_usa", "unit": "EUR", "under": 30, "over": 60, "express_under": 55, "express_over": 90},
     {"name": "Pakistan", "key": "pakistan", "unit": "PKR", "under": 600, "over": 1000, "express_under": 1200, "express_over": 1800},
 ]
+ZONE_NAMES = [zone["name"] for zone in DEFAULT_SHIPPING_ZONES]
+ZONE_CURRENCY = {"Germany": "EUR", "Europe": "EUR", "Canada/USA": "USD", "Pakistan": "PKR"}
+COUNTRY_CODE_TO_ZONE = {
+    "PK": "Pakistan",
+    "DE": "Germany",
+    "US": "Canada/USA",
+    "CA": "Canada/USA",
+    "AT": "Europe",
+    "BE": "Europe",
+    "BG": "Europe",
+    "CH": "Europe",
+    "CY": "Europe",
+    "CZ": "Europe",
+    "DK": "Europe",
+    "EE": "Europe",
+    "ES": "Europe",
+    "FI": "Europe",
+    "FR": "Europe",
+    "GB": "Europe",
+    "GR": "Europe",
+    "HR": "Europe",
+    "HU": "Europe",
+    "IE": "Europe",
+    "IT": "Europe",
+    "LT": "Europe",
+    "LU": "Europe",
+    "LV": "Europe",
+    "MT": "Europe",
+    "NL": "Europe",
+    "NO": "Europe",
+    "PL": "Europe",
+    "PT": "Europe",
+    "RO": "Europe",
+    "SE": "Europe",
+    "SI": "Europe",
+    "SK": "Europe",
+    "UK": "Europe",
+}
+LANGUAGE_TO_ZONE = {
+    "ur": "Pakistan",
+    "de": "Germany",
+    "fr": "Europe",
+    "es": "Europe",
+    "it": "Europe",
+    "pt": "Europe",
+    "tr": "Europe",
+}
+CURRENCY_TO_ZONE = {"PKR": "Pakistan", "EUR": "Europe", "USD": "Canada/USA"}
+ADDRESS_ZONE_HINTS = (
+    ("pakistan", "Pakistan"),
+    ("islamabad", "Pakistan"),
+    ("karachi", "Pakistan"),
+    ("lahore", "Pakistan"),
+    ("deutschland", "Germany"),
+    ("germany", "Germany"),
+    ("berlin", "Germany"),
+    ("munich", "Germany"),
+    ("united states", "Canada/USA"),
+    ("u.s.a", "Canada/USA"),
+    ("u.s.", "Canada/USA"),
+    ("usa", "Canada/USA"),
+    ("canada", "Canada/USA"),
+    ("united kingdom", "Europe"),
+    ("england", "Europe"),
+    ("scotland", "Europe"),
+    ("france", "Europe"),
+    ("italy", "Europe"),
+    ("spain", "Europe"),
+    ("netherlands", "Europe"),
+    ("belgium", "Europe"),
+    ("austria", "Europe"),
+    ("sweden", "Europe"),
+    ("norway", "Europe"),
+    ("poland", "Europe"),
+    ("portugal", "Europe"),
+    ("ireland", "Europe"),
+    ("switzerland", "Europe"),
+)
 LANGUAGES = {
     "en": "English",
     "ur": "اردو",
@@ -84,6 +166,12 @@ LANGUAGES = {
     "zh": "Chinese",
     "ja": "Japanese",
 }
+DEFAULT_FAQS = [
+    ("How do I choose the right size?", "Each product shows available colours and sizes with remaining stock. Choose a colour first, then a size."),
+    ("Which currencies can I use?", "Prices can be viewed in EUR, USD, or PKR. Choose your preferred currency in the header."),
+    ("Can I check a market price first?", "Yes. Product pages include Check price on other platforms when Amazon, Etsy or eBay links are available."),
+    ("How can I contact support?", "Use the Contact page and our team will receive your message through the secure backend."),
+]
 
 PRODUCTS = [
     ("Slim-Fit Stretch Denim Jeans", "Pants", 3499, 4200, "-17% OFF", 4.8, 32, "AR-PNT-01", "https://images.unsplash.com/photo-1542272604-780c36856842?w=800", "30,32,34,36", "Dark Indigo,Washed Black", "Premium cotton denim with comfortable stretch and reinforced stitching.", 20),
@@ -190,10 +278,8 @@ def close_db(_error=None):
         db.close()
 
 
-def ensure_columns(table, columns):
-    db = get_db()
-    # First check the table exists — if not, skip silently
-    table_check = db.execute(
+def table_exists(table):
+    row = get_db().execute(
         """
         SELECT 1 AS ok
         FROM information_schema.tables
@@ -201,8 +287,13 @@ def ensure_columns(table, columns):
         """,
         (table,),
     ).fetchone()
-    if not table_check:
+    return bool(row)
+
+
+def ensure_columns(table, columns):
+    if not table_exists(table):
         return
+    db = get_db()
     existing = {
         row["column_name"]
         for row in db.execute(
@@ -239,15 +330,27 @@ def catalog_sizes_for(product_type):
     return SIZE_MAP.get(product_type, CLOTHES_SIZES)
 
 
+def clean_size_name(raw):
+    extra = (raw or "").strip()[:12]
+    if not extra:
+        return ""
+    allowed = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789./+-")
+    if any(char not in allowed for char in extra):
+        return ""
+    return extra
+
+
 def parse_size_form():
     product_type = request.form.get("product_type", "Clothes")
     allowed = catalog_sizes_for(product_type)
     sizes = [size for size in allowed if request.form.get(f"size_{size}")]
-    if product_type == "Shoes":
-        for extra in (request.form.get("custom_shoe_sizes") or "").split(","):
-            extra = extra.strip()[:10]
-            if extra and extra not in sizes:
-                sizes.append(extra)
+    extras = list(request.form.getlist("extra_size"))
+    extras.extend((request.form.get("custom_sizes") or "").split(","))
+    extras.extend((request.form.get("custom_shoe_sizes") or "").split(","))
+    for extra in extras:
+        extra = clean_size_name(extra)
+        if extra and extra not in sizes:
+            sizes.append(extra)
     return sizes
 
 
@@ -435,44 +538,37 @@ def init_db():
         )
         """,
         """
-        CREATE TABLE IF NOT EXISTS product_listings (
+        CREATE TABLE IF NOT EXISTS main_categories (
             id SERIAL PRIMARY KEY,
-            product_name TEXT NOT NULL,
-            sku TEXT NOT NULL,
-            condition TEXT,
-            main_category TEXT,
-            sub_category TEXT,
-            product_type TEXT,
-            product_weight_kg DOUBLE PRECISION DEFAULT 0,
-            packing_weight_kg DOUBLE PRECISION DEFAULT 0,
-            size_group TEXT,
-            size_value TEXT,
-            colours TEXT,
-            price_europe_eur DOUBLE PRECISION DEFAULT 0,
-            discount_europe_percent DOUBLE PRECISION DEFAULT 0,
-            price_pakistan_pkr DOUBLE PRECISION DEFAULT 0,
-            discount_pakistan_percent DOUBLE PRECISION DEFAULT 0,
-            region_visibility TEXT,
-            shipping_cost_germany DOUBLE PRECISION DEFAULT 0,
-            shipping_cost_europe DOUBLE PRECISION DEFAULT 0,
-            shipping_cost_america DOUBLE PRECISION DEFAULT 0,
-            shipping_cost_pakistan DOUBLE PRECISION DEFAULT 0,
-            express_shipping_charge DOUBLE PRECISION DEFAULT 10,
-            shipping_method TEXT,
-            description TEXT,
-            product_tags TEXT,
-            product_hashtags TEXT,
-            link_ebay TEXT,
-            link_etsy TEXT,
-            link_amazon TEXT,
-            picture_main TEXT,
-            picture_2 TEXT,
-            picture_3 TEXT,
-            pictures_extra TEXT,
-            created_at TIMESTAMP DEFAULT now(),
-            updated_at TIMESTAMP DEFAULT now()
+            name TEXT NOT NULL UNIQUE
         )
-        """, ]
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS sub_categories (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            product_type TEXT NOT NULL,
+            UNIQUE (name, product_type)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS pl_users (
+            id SERIAL PRIMARY KEY,
+            username TEXT NOT NULL UNIQUE,
+            display_name TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS faqs (
+            id SERIAL PRIMARY KEY,
+            question TEXT NOT NULL,
+            answer TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0
+        )
+        """,
+    ]
     for statement in statements:
         db.execute(statement)
     db.commit()
@@ -508,10 +604,24 @@ def init_db():
             "region_visibility": "TEXT NOT NULL DEFAULT 'all'",
             "product_tags": "TEXT",
             "product_hashtags": "TEXT",
+            "likes": "INTEGER NOT NULL DEFAULT 0",
+            "featured": "INTEGER NOT NULL DEFAULT 0",
+            "deal_of_week": "INTEGER NOT NULL DEFAULT 0",
+            "listed_by": "TEXT NOT NULL DEFAULT 'admin'",
         },
     )
+    ensure_columns("users", {"country": "TEXT"})
     ensure_columns("contacts", {"user_id": "INTEGER"})
-    ensure_columns("listings", {"user_id": "INTEGER", "images_json": "TEXT"})
+    ensure_columns(
+        "listings",
+        {
+            "user_id": "INTEGER",
+            "images_json": "TEXT",
+            "status": "TEXT NOT NULL DEFAULT 'pending'",
+            "reviewed_at": "TEXT",
+            "product_id": "INTEGER",
+        },
+    )
     ensure_columns(
         "product_listings",
         {
@@ -524,6 +634,18 @@ def init_db():
 
     if not db.execute("SELECT 1 AS ok FROM categories LIMIT 1").fetchone():
         db.executemany("INSERT INTO categories (name) VALUES (?)", [(name,) for name in DEFAULT_CATEGORIES])
+    if not db.execute("SELECT 1 AS ok FROM main_categories LIMIT 1").fetchone():
+        db.executemany("INSERT INTO main_categories (name) VALUES (?)", [(name,) for name in MAIN_CATEGORIES])
+    if not db.execute("SELECT 1 AS ok FROM sub_categories LIMIT 1").fetchone():
+        db.executemany(
+            "INSERT INTO sub_categories (name, product_type) VALUES (?,?)",
+            [(name, product_type) for product_type, names in SUB_CATEGORIES.items() for name in names],
+        )
+    if not db.execute("SELECT 1 AS ok FROM faqs LIMIT 1").fetchone():
+        db.executemany(
+            "INSERT INTO faqs (question, answer, sort_order) VALUES (?,?,?)",
+            [(question, answer, index) for index, (question, answer) in enumerate(DEFAULT_FAQS)],
+        )
 
     for zone in DEFAULT_SHIPPING_ZONES:
         db.execute(
@@ -625,6 +747,7 @@ def setup():
     session.setdefault("currency", "EUR")
     session.setdefault("language", "en")
     session.setdefault("cart", {})
+    session.setdefault("liked", [])
 
 
 @app.context_processor
@@ -636,9 +759,15 @@ def helpers():
         "currency": session["currency"],
         "language": session["language"],
         "pakistan_customer": pakistan_customer(),
+        "customer_region": customer_zone_name(),
+        "customer_location_source": customer_location()["source"],
+        "shipping_regions": ZONE_NAMES,
         "cart_count": sum(session["cart"].values()),
         "is_admin": session.get("is_admin", False),
+        "is_pl": session.get("is_pl", False),
+        "pl_display_name": session.get("pl_display_name", ""),
         "current_user": user,
+        "liked_ids": liked_product_ids(),
         "shop_nav": shop_category_tree(),
         "selected_main": request.args.get("main", ""),
         "selected_sub": request.args.get("sub", ""),
@@ -651,9 +780,14 @@ def product(row):
         item["color_rows"] = json.loads(item.get("colors_json") or "[]")
     except json.JSONDecodeError:
         item["color_rows"] = colors_from_legacy(item.get("colors"), item.get("stock"))
+    if not isinstance(item.get("color_rows"), list):
+        item["color_rows"] = colors_from_legacy(item.get("colors"), item.get("stock"))
+    item["color_rows"] = [entry for entry in item["color_rows"] if isinstance(entry, dict)]
     try:
         item["size_rows"] = json.loads(item.get("sizes_json") or "[]")
     except json.JSONDecodeError:
+        item["size_rows"] = sizes_from_legacy(item.get("sizes"))
+    if not isinstance(item.get("size_rows"), list):
         item["size_rows"] = sizes_from_legacy(item.get("sizes"))
     for entry in item["color_rows"]:
         if not isinstance(entry.get("sizes"), dict):
@@ -665,18 +799,20 @@ def product(row):
                 for index, size in enumerate(sizes)
             }
         entry["quantity"] = sum(max(int(value or 0), 0) for value in entry["sizes"].values())
-    item["sizes"] = item["size_rows"]
-    item["colors"] = [entry["name"] for entry in item["color_rows"]]
-    item["stock"] = sum(int(entry.get("quantity", 0)) for entry in item["color_rows"])
-    image_folder = os.path.join(UPLOAD_ROOT, item["sku"])
+    item["sizes"] = [str(size) for size in item["size_rows"] if str(size).strip()]
+    item["size_rows"] = item["sizes"]
+    item["colors"] = [entry.get("name") or "Default" for entry in item["color_rows"]]
+    item["stock"] = sum(int(entry.get("quantity", 0) or 0) for entry in item["color_rows"])
+    sku = item.get("sku") or ""
+    image_folder = os.path.join(UPLOAD_ROOT, sku) if sku else ""
     local_gallery = []
-    for filename in ["main.jpg"] + [f"{index}.jpg" for index in range(2, 11)]:
-        if os.path.exists(os.path.join(image_folder, filename)):
-            local_gallery.append(f"/static/images/{item['sku']}/{filename}")
-    item["gallery"] = local_gallery or (
-        [item["image"]] + [image for image in GALLERY_IMAGES.get(item["category"], []) if image != item["image"]][:2]
-    )
-    item["image"] = item["gallery"][0] if item["gallery"] else item.get("image") or ""
+    if image_folder:
+        for filename in ["main.jpg"] + [f"{index}.jpg" for index in range(2, 11)]:
+            if os.path.exists(os.path.join(image_folder, filename)):
+                local_gallery.append(f"/static/images/{sku}/{filename}")
+    fallback_image = item.get("image") or ""
+    item["gallery"] = [url for url in (local_gallery or ([fallback_image] + [image for image in GALLERY_IMAGES.get(item["category"], []) if image != fallback_image][:2])) if url]
+    item["image"] = item["gallery"][0] if item["gallery"] else fallback_image
     item["amazon_url"] = item.get("amazon_url") or ""
     item["etsy_url"] = item.get("etsy_url") or ""
     item["ebay_url"] = item.get("ebay_url") or ""
@@ -731,7 +867,151 @@ def product(row):
     item["product_hashtags"] = keywords_from_stored(item.get("product_hashtags"))
     item["tags_text"] = ", ".join(item["product_tags"])
     item["hashtags_text"] = ", ".join(item["product_hashtags"])
+    try:
+        item["likes"] = max(0, int(item.get("likes") or 0))
+    except (TypeError, ValueError):
+        item["likes"] = 0
+    try:
+        item["rating"] = max(0.0, min(5.0, float(item.get("rating") or 0)))
+    except (TypeError, ValueError):
+        item["rating"] = 0.0
+    item["price_eur"] = round(original_price / EUR_TO_STORE, 2) if original_price else 0
+    try:
+        item["featured"] = 1 if int(item.get("featured") or 0) else 0
+    except (TypeError, ValueError):
+        item["featured"] = 0
+    try:
+        item["deal_of_week"] = 1 if int(item.get("deal_of_week") or 0) else 0
+    except (TypeError, ValueError):
+        item["deal_of_week"] = 0
+    item["stars"] = star_display(item["rating"])
+    item["listed_by"] = (item.get("listed_by") or "admin").strip() or "admin"
     return item
+
+
+def star_display(rating):
+    try:
+        filled = int(round(float(rating or 0)))
+    except (TypeError, ValueError):
+        filled = 0
+    filled = max(0, min(5, filled))
+    return "★" * filled + "☆" * (5 - filled)
+
+
+def liked_product_ids():
+    ids = []
+    for value in session.get("liked") or []:
+        try:
+            ids.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    return ids
+
+
+def listing_images(listing):
+    try:
+        images = json.loads((listing or {}).get("images_json") or "[]")
+    except (TypeError, json.JSONDecodeError, AttributeError):
+        images = []
+    if not isinstance(images, list):
+        return []
+    return [url for url in images if url]
+
+
+def listing_view(row):
+    item = dict(row) if not isinstance(row, dict) else dict(row)
+    item["images"] = listing_images(item)
+    item["status"] = item.get("status") or "pending"
+    return item
+
+
+def parse_order_items(raw):
+    if isinstance(raw, list):
+        return raw
+    if not raw:
+        return []
+    for loader in (json.loads, ast.literal_eval):
+        try:
+            data = loader(raw)
+        except (TypeError, ValueError, SyntaxError, json.JSONDecodeError):
+            continue
+        if isinstance(data, list):
+            return data
+    return []
+
+
+def listing_category_fields(category):
+    name = (category or "").strip()
+    subs = load_sub_categories()
+    for product_type, names in subs.items():
+        if name == product_type:
+            return product_type, names[0]
+        if name in names:
+            return product_type, name
+    return "Clothes", name or "Tops"
+
+
+def approve_seller_listing(listing_id):
+    db = get_db()
+    listing = db.execute("SELECT * FROM listings WHERE id=?", (listing_id,)).fetchone()
+    if not listing:
+        raise ValueError("Listing not found.")
+    if listing.get("status") == "approved" and listing.get("product_id"):
+        return listing["product_id"]
+    images = listing_images(listing)
+    if not images:
+        raise ValueError("This listing has no images to publish.")
+    product_type, sub_category = listing_category_fields(listing["category"])
+    sku = f"SELL-{listing_id}"
+    if db.execute("SELECT id FROM products WHERE sku=?", (sku,)).fetchone():
+        sku = f"SELL-{listing_id}-{int(datetime.utcnow().timestamp())}"
+    store_price = round(max(0.01, float(listing["price"] or 0)) * 278, 2)
+    color_rows = [{"name": "Default", "quantity": 1, "sizes": {"Standard": 1}}]
+    size_rows = ["Standard"]
+    cursor = db.execute(
+        """
+        INSERT INTO products (
+            name,category,price,rating,reviews_count,likes,sku,image,sizes,colors,
+            description,stock,active,colors_json,sizes_json,condition,main_category,
+            sub_category,product_type,size_group,region_visibility,featured,deal_of_week,listed_by
+        ) VALUES (?,?,?,0,0,0,?,?,?,?,?,1,1,?,?,?,?,?,?,?,?,0,0,?)
+        RETURNING id
+        """,
+        (
+            listing["title"][:100],
+            sub_category,
+            store_price,
+            sku,
+            images[0],
+            "Standard",
+            "Default",
+            listing["description"][:3000],
+            json.dumps(color_rows),
+            json.dumps(size_rows),
+            "used",
+            "Unisex",
+            sub_category,
+            product_type,
+            "Unisex",
+            "all",
+            "admin",
+        ),
+    )
+    product_id = cursor.fetchone()["id"]
+    dest = os.path.join(UPLOAD_ROOT, sku)
+    os.makedirs(dest, exist_ok=True)
+    for index, url in enumerate(images[:10], start=1):
+        src = os.path.join(BASE_DIR, str(url).lstrip("/"))
+        if not os.path.exists(src):
+            continue
+        target = "main.jpg" if index == 1 else f"{index}.jpg"
+        shutil.copy2(src, os.path.join(dest, target))
+    db.execute(
+        "UPDATE listings SET status=?, reviewed_at=?, product_id=? WHERE id=?",
+        ("approved", datetime.utcnow().isoformat(), product_id, listing_id),
+    )
+    db.commit()
+    return product_id
 
 
 def fetch_product(product_id):
@@ -746,6 +1026,10 @@ def fetch_product(product_id):
 
 def inferred_product_type(category):
     name = category or ""
+    subs = load_sub_categories()
+    for product_type, options in subs.items():
+        if name == product_type or name in options:
+            return product_type
     if name == "Shoes" or name in SUB_CATEGORIES["Shoes"]:
         return "Shoes"
     if name in SUB_CATEGORIES["Accessories"] or name in {"Wallets", "Purses", "Belts"}:
@@ -773,13 +1057,17 @@ def product_sub_category(item):
 def shop_category_tree(items=None):
     if items is None:
         items = visible_catalog(get_db().execute("SELECT * FROM products WHERE active=1").fetchall())
-    grouped = {name: [] for name in MAIN_CATEGORIES}
+    mains = load_main_categories()
+    grouped = {name: [] for name in mains}
+    fallback = mains[0] if mains else "Unisex"
     for item in items:
-        main = item.get("main_category") if item.get("main_category") in grouped else "Unisex"
+        main = item.get("main_category") if item.get("main_category") in grouped else fallback
+        if main not in grouped:
+            continue
         sub = product_sub_category(item)
         if sub and sub not in grouped[main]:
             grouped[main].append(sub)
-    return [{"name": name, "subs": sorted(grouped[name])} for name in MAIN_CATEGORIES]
+    return [{"name": name, "subs": sorted(grouped[name])} for name in mains]
 
 
 def matches_shop_filter(item, main="", sub="", category=""):
@@ -794,23 +1082,212 @@ def matches_shop_filter(item, main="", sub="", category=""):
     return True
 
 
-def pakistan_customer():
+def client_ip():
+    forwarded = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+    return forwarded or request.headers.get("X-Real-IP") or request.remote_addr or ""
+
+
+def is_local_ip(ip):
+    return (
+        not ip
+        or ip in {"127.0.0.1", "::1", "localhost"}
+        or ip.startswith("127.")
+        or ip.startswith("192.168.")
+        or ip.startswith("10.")
+        or ip.startswith("172.16.")
+    )
+
+
+def lookup_ip_country():
+    cached = session.get("ip_country")
+    if cached is not None:
+        return cached
+    cf_country = (request.headers.get("CF-IPCountry") or "").upper()
+    if cf_country and cf_country not in {"XX", "T1"}:
+        session["ip_country"] = cf_country
+        return cf_country
+    ip = client_ip()
+    if is_local_ip(ip):
+        session["ip_country"] = ""
+        return ""
+    try:
+        url = f"http://ip-api.com/json/{ip}?fields=status,countryCode"
+        with urllib.request.urlopen(url, timeout=1.5) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        session["ip_country"] = (data.get("countryCode") or "").upper() if data.get("status") == "success" else ""
+    except (urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError, OSError):
+        session["ip_country"] = ""
+    return session.get("ip_country") or ""
+
+
+def zone_from_address(text):
+    blob = f" {(text or '').lower()} "
+    for hint, zone in ADDRESS_ZONE_HINTS:
+        if f" {hint} " in blob or blob.strip().endswith(hint) or blob.strip().startswith(hint):
+            return zone
+        if hint in blob:
+            return zone
+    return ""
+
+
+def zone_from_accept_language():
+    header = request.headers.get("Accept-Language") or ""
+    for part in header.split(","):
+        code = part.split(";")[0].strip().lower()
+        if code.startswith("ur") or code.endswith("-pk"):
+            return "Pakistan"
+        if code.startswith("de") or code.endswith("-de"):
+            return "Germany"
+        if code.endswith("-us") or code.endswith("-ca"):
+            return "Canada/USA"
+        lang = code.split("-")[0]
+        if lang in LANGUAGE_TO_ZONE:
+            return LANGUAGE_TO_ZONE[lang]
+    return ""
+
+
+def apply_region(zone):
+    if zone not in ZONE_NAMES:
+        return
+    session["region"] = zone
+    session["currency"] = ZONE_CURRENCY.get(zone, session.get("currency", "EUR"))
+    if zone == "Pakistan":
+        session["language"] = session.get("language") if session.get("language") == "ur" else session.get("language", "en")
+
+
+def customer_location():
     if not has_request_context():
-        return False
-    return session.get("currency") == "PKR" or session.get("language") == "ur"
+        return {"zone": "Europe", "source": "default"}
+    if getattr(g, "customer_location", None):
+        return g.customer_location
+    address_zone = zone_from_address(request.form.get("address", ""))
+    profile_zone = ""
+    user = current_user()
+    if user:
+        profile_zone = (user.get("country") or "").strip()
+        if profile_zone not in ZONE_NAMES:
+            profile_zone = ""
+    explicit = (session.get("region") or "").strip()
+    if explicit not in ZONE_NAMES:
+        explicit = ""
+    ip_code = lookup_ip_country()
+    ip_zone = COUNTRY_CODE_TO_ZONE.get(ip_code, "")
+    language_zone = LANGUAGE_TO_ZONE.get(session.get("language"), "")
+    accept_zone = zone_from_accept_language()
+    currency_zone = CURRENCY_TO_ZONE.get(session.get("currency"), "")
+    if session.get("language") == "de" and session.get("currency") == "EUR":
+        currency_zone = "Germany"
+    if address_zone:
+        result = {"zone": address_zone, "source": "delivery address"}
+    elif explicit:
+        result = {"zone": explicit, "source": "your selected region"}
+    elif profile_zone:
+        result = {"zone": profile_zone, "source": "your profile"}
+    elif ip_zone:
+        result = {"zone": ip_zone, "source": "your IP location"}
+    elif accept_zone:
+        result = {"zone": accept_zone, "source": "browser language"}
+    elif language_zone:
+        result = {"zone": language_zone, "source": "site language"}
+    elif currency_zone:
+        result = {"zone": currency_zone, "source": "currency"}
+    else:
+        result = {"zone": "Europe", "source": "default"}
+    g.customer_location = result
+    return result
+
+
+def customer_zone_name():
+    return customer_location()["zone"]
+
+
+def pakistan_customer():
+    return customer_zone_name() == "Pakistan"
 
 
 def category_names():
     return [row["name"] for row in get_db().execute("SELECT name FROM categories ORDER BY name").fetchall()]
 
 
-def empty_color_slots(existing=None):
+def load_main_categories():
+    if "main_categories" not in g:
+        try:
+            rows = get_db().execute("SELECT name FROM main_categories ORDER BY id").fetchall()
+            names = [row["name"] for row in rows]
+            g.main_categories = names or list(MAIN_CATEGORIES)
+        except Exception:
+            get_db().rollback()
+            g.main_categories = list(MAIN_CATEGORIES)
+    return g.main_categories
+
+
+def load_sub_categories():
+    if "sub_categories" not in g:
+        grouped = {product_type: [] for product_type in PRODUCT_TYPES}
+        try:
+            rows = get_db().execute("SELECT name, product_type FROM sub_categories ORDER BY id").fetchall()
+            for row in rows:
+                grouped.setdefault(row["product_type"], []).append(row["name"])
+        except Exception:
+            get_db().rollback()
+            rows = []
+        if not any(grouped.values()):
+            grouped = {key: list(value) for key, value in SUB_CATEGORIES.items()}
+        g.sub_categories = grouped
+    return g.sub_categories
+
+
+def staff_home():
+    if session.get("is_admin"):
+        return url_for("admin_dashboard")
+    if session.get("is_pl"):
+        return url_for("pl_dashboard")
+    return url_for("home")
+
+
+def product_image_slots(item=None):
+    sku = (item or {}).get("sku") or ""
+    slots = []
+    for index in range(1, 11):
+        filename = "main.jpg" if index == 1 else f"{index}.jpg"
+        path = os.path.join(UPLOAD_ROOT, sku, filename) if sku else ""
+        url = ""
+        if sku and os.path.exists(path):
+            url = f"/static/images/{sku}/{filename}?v={int(os.path.getmtime(path))}"
+        slots.append(
+            {
+                "index": index,
+                "field": "main_image" if index == 1 else f"image_{index}",
+                "label": "Image 1 (main)" if index == 1 else f"Image {index}",
+                "url": url,
+            }
+        )
+    return slots
+
+
+def extra_sizes_of(item=None):
+    if not item:
+        return []
+    catalog = set(catalog_sizes_for(item.get("product_type") or "Clothes"))
+    extras = []
+    for size in item.get("size_rows") or []:
+        if size not in catalog and size not in extras:
+            extras.append(size)
+    return extras
+
+
+def empty_color_slots(existing=None, extra_sizes=None):
     existing = existing or []
-    slots = [{"name": "", "sizes": {size: "" for size in ALL_CATALOG_SIZES}} for _ in range(10)]
+    extra_sizes = extra_sizes or []
+    all_sizes = list(ALL_CATALOG_SIZES)
+    for size in extra_sizes:
+        if size not in all_sizes:
+            all_sizes.append(size)
+    slots = [{"name": "", "sizes": {size: "" for size in all_sizes}} for _ in range(10)]
     for index, entry in enumerate(existing[:10]):
         slots[index] = {
             "name": entry.get("name", ""),
-            "sizes": {size: entry.get("sizes", {}).get(size, "") for size in ALL_CATALOG_SIZES},
+            "sizes": {size: entry.get("sizes", {}).get(size, "") for size in all_sizes},
         }
     return slots
 
@@ -894,9 +1371,25 @@ def parse_product_shipping_form():
 @app.route("/")
 def home():
     db = get_db()
-    products = visible_catalog(db.execute("SELECT * FROM products WHERE active=1 ORDER BY id").fetchall())
-    deal = next((p for p in products if p["product_type"] == "Shoes"), products[0] if products else None)
-    return render_template("home.html", products=products[:8], deal=deal)
+    products = visible_catalog(db.execute("SELECT * FROM products WHERE active=1 ORDER BY id DESC").fetchall())
+    flagged_deals = [item for item in products if item.get("deal_of_week")]
+    deal = flagged_deals[0] if flagged_deals else next((item for item in products if item["product_type"] == "Shoes"), products[0] if products else None)
+    featured = [item for item in products if item.get("featured")] or products[:8]
+    testimonials = db.execute(
+        """
+        SELECT reviews.name, reviews.rating, reviews.body, products.name AS product_name
+        FROM reviews JOIN products ON products.id=reviews.product_id
+        ORDER BY reviews.id DESC LIMIT 3
+        """
+    ).fetchall()
+    faqs = db.execute("SELECT * FROM faqs ORDER BY sort_order, id").fetchall()
+    return render_template(
+        "home.html",
+        products=featured,
+        deal=deal,
+        testimonials=testimonials,
+        faqs=faqs,
+    )
 
 
 @app.route("/products")
@@ -905,7 +1398,7 @@ def products():
     sub = request.args.get("sub", "").strip()
     category = request.args.get("category", "All").strip() or "All"
     search = request.args.get("search", "").strip()
-    if main not in MAIN_CATEGORIES:
+    if main not in load_main_categories():
         main = ""
     query, args = "SELECT * FROM products WHERE active=1", []
     if search:
@@ -952,6 +1445,24 @@ def product_detail(product_id):
     return render_template("product_detail.html", product=item, reviews=reviews, related=related)
 
 
+@app.post("/product/<int:product_id>/like")
+def like_product(product_id):
+    fetch_product(product_id)
+    liked = liked_product_ids()
+    db = get_db()
+    if product_id in liked:
+        liked.remove(product_id)
+        db.execute("UPDATE products SET likes=GREATEST(likes-1,0) WHERE id=?", (product_id,))
+        flash("Like removed.", "success")
+    else:
+        liked.append(product_id)
+        db.execute("UPDATE products SET likes=likes+1 WHERE id=?", (product_id,))
+        flash("Thanks for the like.", "success")
+    db.commit()
+    session["liked"] = liked
+    return redirect(request.referrer or url_for("product_detail", product_id=product_id))
+
+
 @app.post("/product/<int:product_id>/review")
 def add_review(product_id):
     fetch_product(product_id)
@@ -990,17 +1501,25 @@ def add_cart(product_id):
         return redirect(url_for("product_detail", product_id=product_id))
     color = next((entry for entry in item["color_rows"] if entry["name"] == selected_color), None)
     variant_stock = int(color["sizes"].get(selected_size, 0)) if color else 0
+    try:
+        quantity = int(request.form.get("quantity", 1) or 1)
+    except ValueError:
+        quantity = 1
+    quantity = max(1, quantity)
     key = f"{product_id}:{selected_size}:{selected_color}"
     if variant_stock <= 0:
         flash(f"{selected_color} in size {selected_size} is currently out of stock.", "error")
         return redirect(url_for("product_detail", product_id=product_id))
     cart = session["cart"]
-    if cart.get(key, 0) >= variant_stock:
+    new_quantity = cart.get(key, 0) + quantity
+    if new_quantity > variant_stock:
         flash(f"Only {variant_stock} left in {selected_color}, size {selected_size}.", "error")
         return redirect(url_for("product_detail", product_id=product_id))
-    cart[key] = cart.get(key, 0) + 1
+    cart[key] = new_quantity
     session["cart"] = cart
     flash(f"{item['name']} ({selected_color} / {selected_size}) added to your cart.", "success")
+    if request.form.get("intent") == "buy":
+        return redirect(url_for("cart"))
     return redirect(request.referrer or url_for("cart"))
 
 
@@ -1008,6 +1527,51 @@ def add_cart(product_id):
 def remove_cart(product_id):
     cart = session["cart"]
     cart.pop(request.form.get("cart_key", ""), None)
+    session["cart"] = cart
+    return redirect(url_for("cart"))
+
+
+@app.post("/cart/update")
+def update_cart():
+    cart = session["cart"]
+    key = request.form.get("cart_key", "")
+    if key not in cart:
+        return redirect(url_for("cart"))
+    action = request.form.get("action", "")
+    try:
+        current = int(cart[key])
+    except (TypeError, ValueError):
+        current = 1
+    if action == "inc":
+        current += 1
+    elif action == "dec":
+        current -= 1
+    else:
+        try:
+            current = int(request.form.get("quantity", current) or current)
+        except ValueError:
+            pass
+    if current <= 0:
+        cart.pop(key, None)
+        session["cart"] = cart
+        return redirect(url_for("cart"))
+    parts = key.split(":")
+    item_id = parts[0]
+    selected_size = parts[1] if len(parts) > 1 else "Standard"
+    selected_color = parts[2] if len(parts) > 2 else "Default"
+    row = get_db().execute("SELECT * FROM products WHERE id=?", (item_id,)).fetchone()
+    if row:
+        item = product(row)
+        color = next((entry for entry in item["color_rows"] if entry["name"] == selected_color), None)
+        variant_stock = int(color["sizes"].get(selected_size, 0)) if color else 0
+        if current > variant_stock:
+            flash(f"Only {variant_stock} left in {selected_color}, size {selected_size}.", "error")
+            current = max(1, variant_stock) if variant_stock else 0
+        if current <= 0:
+            cart.pop(key, None)
+            session["cart"] = cart
+            return redirect(url_for("cart"))
+    cart[key] = current
     session["cart"] = cart
     return redirect(url_for("cart"))
 
@@ -1119,7 +1683,9 @@ def shipping_options(items, weight_kg, method="standard"):
                 "amount": amount,
             }
         )
-    return options
+    region = customer_zone_name()
+    matched = [option for option in options if option["name"] == region]
+    return matched or options[:1]
 
 
 def shipping_quote(items, subtotal, country, method="standard"):
@@ -1160,13 +1726,17 @@ def reserve_order_stock(db, items):
 @app.route("/cart", methods=["GET", "POST"])
 def cart():
     items, total = cart_items()
-    country = request.form.get("country", "Germany") if request.method == "POST" else request.args.get("country", "Germany")
+    address_zone = zone_from_address(request.form.get("address", "")) if request.method == "POST" else ""
+    if address_zone:
+        apply_region(address_zone)
+        g.customer_location = None
+    country = customer_zone_name()
     shipping_method = request.form.get("shipping_method", "standard") if request.method == "POST" else request.args.get("shipping_method", "standard")
     if shipping_method not in {"standard", "express"}:
         shipping_method = "standard"
-    valid_countries = {zone["name"] for zone in DEFAULT_SHIPPING_ZONES}
+    valid_countries = set(ZONE_NAMES)
     if country not in valid_countries:
-        country = "Germany"
+        country = customer_zone_name()
     shipping, shipping_label, weight_kg = shipping_quote(items, total, country, shipping_method)
     if request.method == "POST":
         name, email, address = (request.form.get(k, "").strip() for k in ("name", "email", "address"))
@@ -1284,23 +1854,34 @@ def profile():
         else:
             try:
                 db = get_db()
-                if password:
-                    if len(password) < 6:
-                        flash("New password must be at least 6 characters.", "error")
-                        return render_template("profile.html", user=user)
-                    db.execute(
-                        "UPDATE users SET name=?, email=?, password_hash=? WHERE id=?",
-                        (name, email, generate_password_hash(password), user["id"]),
-                    )
+                if password and len(password) < 6:
+                    flash("New password must be at least 6 characters.", "error")
                 else:
-                    db.execute("UPDATE users SET name=?, email=? WHERE id=?", (name, email, user["id"]))
-                db.commit()
-                flash("Profile updated.", "success")
-                return redirect(url_for("profile"))
+                    country = request.form.get("country", "").strip()
+                    if country not in ZONE_NAMES:
+                        country = user.get("country") or customer_zone_name()
+                    apply_region(country)
+                    if password:
+                        db.execute(
+                            "UPDATE users SET name=?, email=?, password_hash=?, country=? WHERE id=?",
+                            (name, email, generate_password_hash(password), country, user["id"]),
+                        )
+                    else:
+                        db.execute("UPDATE users SET name=?, email=?, country=? WHERE id=?", (name, email, country, user["id"]))
+                    db.commit()
+                    flash("Profile updated.", "success")
+                    return redirect(url_for("profile"))
             except IntegrityError:
                 flash("That email is already in use.", "error")
         user = current_user()
-    return render_template("profile.html", user=user)
+    db = get_db()
+    orders = []
+    for row in db.execute("SELECT * FROM orders WHERE email=? ORDER BY id DESC", (user["email"],)).fetchall():
+        order = dict(row)
+        order["items"] = parse_order_items(order.get("items"))
+        orders.append(order)
+    listings = [listing_view(row) for row in db.execute("SELECT * FROM listings WHERE user_id=? ORDER BY id DESC", (user["id"],)).fetchall()]
+    return render_template("profile.html", user=user, orders=orders, listings=listings)
 
 
 @app.route("/sell", methods=["GET", "POST"])
@@ -1325,8 +1906,8 @@ def sell():
                 db = get_db()
                 cursor = db.execute(
                     """
-                    INSERT INTO listings (user_id,seller_name,title,category,price,description,images_json,created_at)
-                    VALUES (?,?,?,?,?,?,?,?)
+                    INSERT INTO listings (user_id,seller_name,title,category,price,description,images_json,created_at,status)
+                    VALUES (?,?,?,?,?,?,?,?,?)
                     RETURNING id
                     """,
                     (
@@ -1338,6 +1919,7 @@ def sell():
                         description,
                         "[]",
                         datetime.utcnow().isoformat(),
+                        "pending",
                     ),
                 )
                 listing_id = cursor.fetchone()["id"]
@@ -1353,7 +1935,11 @@ def sell():
                     return redirect(url_for("sell"))
             except ValueError as error:
                 flash(str(error), "error")
-    return render_template("sell.html", categories=categories, user=user)
+    listings = [
+        listing_view(row)
+        for row in get_db().execute("SELECT * FROM listings WHERE user_id=? ORDER BY id DESC", (user["id"],)).fetchall()
+    ]
+    return render_template("sell.html", categories=categories, user=user, listings=listings)
 
 
 @app.route("/contact", methods=["GET", "POST"])
@@ -1378,18 +1964,33 @@ def contact():
 @app.post("/preferences")
 def preferences():
     currency, language = request.form.get("currency"), request.form.get("language")
+    region = request.form.get("region", "").strip()
+    old_currency = session.get("currency")
+    old_language = session.get("language")
+    old_region = session.get("region")
     if currency in CURRENCIES:
         session["currency"] = currency
     if language in LANGUAGES:
         session["language"] = language
         if language == "ur":
             session["currency"] = "PKR"
+    if region in ZONE_NAMES and region != old_region:
+        apply_region(region)
+    elif currency in CURRENCIES and currency != old_currency:
+        inferred = "Germany" if currency == "EUR" and session.get("language") == "de" else CURRENCY_TO_ZONE.get(currency)
+        if inferred:
+            session["region"] = inferred
+    elif language in LANGUAGES and language != old_language:
+        if language == "ur":
+            session["region"] = "Pakistan"
+        elif language in LANGUAGE_TO_ZONE:
+            session["region"] = LANGUAGE_TO_ZONE[language]
     return redirect(request.referrer or url_for("home"))
 
 
 @app.get("/api/products")
 def api_products():
-    return jsonify([product(r) for r in get_db().execute("SELECT * FROM products WHERE active=1").fetchall()])
+    return jsonify(visible_catalog(get_db().execute("SELECT * FROM products WHERE active=1").fetchall()))
 
 
 @app.route("/admin/login", methods=["GET", "POST"])
@@ -1432,9 +2033,97 @@ def admin_dashboard():
             """
         ).fetchall(),
         contacts=db.execute("SELECT * FROM contacts ORDER BY id DESC LIMIT 20").fetchall(),
-        listings=db.execute("SELECT * FROM listings ORDER BY id DESC LIMIT 20").fetchall(),
+        listings=[listing_view(row) for row in db.execute("SELECT * FROM listings ORDER BY id DESC LIMIT 50").fetchall()],
         categories=db.execute("SELECT * FROM categories ORDER BY name").fetchall(),
         shipping_zones=load_shipping_zones(),
+        faqs=db.execute("SELECT * FROM faqs ORDER BY sort_order, id").fetchall(),
+    )
+
+
+@app.post("/admin/listing/<int:listing_id>/approve")
+@admin_required
+def admin_listing_approve(listing_id):
+    try:
+        product_id = approve_seller_listing(listing_id)
+        flash(f"Listing approved and published to the shop as product #{product_id}.", "success")
+    except ValueError as error:
+        flash(str(error), "error")
+    return redirect(url_for("admin_dashboard"))
+
+
+@app.post("/admin/listing/<int:listing_id>/reject")
+@admin_required
+def admin_listing_reject(listing_id):
+    get_db().execute(
+        "UPDATE listings SET status=?, reviewed_at=? WHERE id=?",
+        ("rejected", datetime.utcnow().isoformat(), listing_id),
+    )
+    get_db().commit()
+    flash("Listing rejected.", "success")
+    return redirect(url_for("admin_dashboard"))
+
+
+@app.route("/admin/faqs", methods=["GET", "POST"])
+@admin_required
+def admin_faqs():
+    db = get_db()
+    if request.method == "POST":
+        action = request.form.get("action")
+        question = request.form.get("question", "").strip()[:200]
+        answer = request.form.get("answer", "").strip()[:2000]
+        try:
+            faq_id = int(request.form.get("faq_id", 0) or 0)
+        except ValueError:
+            faq_id = 0
+        if action == "add" and question and answer:
+            next_order = db.execute("SELECT COALESCE(MAX(sort_order),0)+1 AS n FROM faqs").fetchone()["n"]
+            db.execute("INSERT INTO faqs (question,answer,sort_order) VALUES (?,?,?)", (question, answer, next_order))
+            db.commit()
+            flash("FAQ added.", "success")
+        elif action == "save" and faq_id and question and answer:
+            db.execute("UPDATE faqs SET question=?, answer=? WHERE id=?", (question, answer, faq_id))
+            db.commit()
+            flash("FAQ updated.", "success")
+        elif action == "delete" and faq_id:
+            db.execute("DELETE FROM faqs WHERE id=?", (faq_id,))
+            db.commit()
+            flash("FAQ deleted.", "success")
+        else:
+            flash("Please complete the question and answer.", "error")
+        return redirect(url_for("admin_faqs"))
+    return render_template(
+        "manage_faqs.html",
+        faqs=db.execute("SELECT * FROM faqs ORDER BY sort_order, id").fetchall(),
+        back_url=url_for("admin_dashboard"),
+    )
+
+
+@app.route("/admin/main-categories", methods=["GET", "POST"])
+@admin_required
+def admin_main_categories():
+    if request.method == "POST":
+        handle_main_category_form()
+        return redirect(url_for("admin_main_categories"))
+    return render_template(
+        "manage_main_categories.html",
+        categories=get_db().execute("SELECT * FROM main_categories ORDER BY id").fetchall(),
+        back_url=url_for("admin_dashboard"),
+        save_url=url_for("admin_main_categories"),
+    )
+
+
+@app.route("/admin/sub-categories", methods=["GET", "POST"])
+@admin_required
+def admin_sub_categories():
+    if request.method == "POST":
+        handle_sub_category_form()
+        return redirect(url_for("admin_sub_categories"))
+    return render_template(
+        "manage_sub_categories.html",
+        categories=get_db().execute("SELECT * FROM sub_categories ORDER BY product_type, id").fetchall(),
+        product_types=PRODUCT_TYPES,
+        back_url=url_for("admin_dashboard"),
+        save_url=url_for("admin_sub_categories"),
     )
 
 
@@ -1509,6 +2198,121 @@ def admin_categories():
     return redirect(url_for("admin_dashboard") + "#categories")
 
 
+def save_named_category(table, name, extra=None):
+    name = (name or "").strip()[:40]
+    if not name:
+        raise ValueError("Category name is required.")
+    columns = ["name"]
+    values = [name]
+    if extra:
+        columns.extend(extra.keys())
+        values.extend(extra.values())
+    get_db().execute(
+        f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({', '.join('?' for _ in values)})",
+        tuple(values),
+    )
+
+
+def handle_main_category_form():
+    action = request.form.get("action")
+    db = get_db()
+    if action == "add":
+        try:
+            save_named_category("main_categories", request.form.get("name"))
+            db.commit()
+            flash("Main category added.", "success")
+        except ValueError as error:
+            flash(str(error), "error")
+        except IntegrityError:
+            db.rollback()
+            flash("That main category already exists.", "error")
+    elif action == "rename":
+        category_id = request.form.get("category_id")
+        name = (request.form.get("name") or "").strip()[:40]
+        row = db.execute("SELECT * FROM main_categories WHERE id=?", (category_id,)).fetchone()
+        if not row or not name:
+            flash("Valid main category and new name are required.", "error")
+        else:
+            try:
+                db.execute("UPDATE main_categories SET name=? WHERE id=?", (name, category_id))
+                db.execute("UPDATE products SET main_category=? WHERE main_category=?", (name, row["name"]))
+                db.commit()
+                flash("Main category updated.", "success")
+            except IntegrityError:
+                db.rollback()
+                flash("That main category name already exists.", "error")
+    elif action == "delete":
+        category_id = request.form.get("category_id")
+        row = db.execute("SELECT * FROM main_categories WHERE id=?", (category_id,)).fetchone()
+        if not row:
+            flash("Main category not found.", "error")
+        else:
+            in_use = db.execute(
+                "SELECT COUNT(*) AS count FROM products WHERE main_category=?",
+                (row["name"],),
+            ).fetchone()["count"]
+            if in_use:
+                flash("Cannot delete a main category that still has products.", "error")
+            else:
+                db.execute("DELETE FROM main_categories WHERE id=?", (category_id,))
+                db.commit()
+                flash("Main category deleted.", "success")
+
+
+def handle_sub_category_form():
+    action = request.form.get("action")
+    db = get_db()
+    if action == "add":
+        product_type = request.form.get("product_type", "").strip()
+        if product_type not in PRODUCT_TYPES:
+            flash("Choose Clothes, Shoes, or Accessories for the sub category.", "error")
+            return
+        try:
+            save_named_category("sub_categories", request.form.get("name"), {"product_type": product_type})
+            db.commit()
+            flash("Sub category added.", "success")
+        except ValueError as error:
+            flash(str(error), "error")
+        except IntegrityError:
+            db.rollback()
+            flash("That sub category already exists for this product type.", "error")
+    elif action == "rename":
+        category_id = request.form.get("category_id")
+        name = (request.form.get("name") or "").strip()[:40]
+        product_type = request.form.get("product_type", "").strip()
+        row = db.execute("SELECT * FROM sub_categories WHERE id=?", (category_id,)).fetchone()
+        if not row or not name or product_type not in PRODUCT_TYPES:
+            flash("Valid sub category, product type, and new name are required.", "error")
+        else:
+            try:
+                db.execute(
+                    "UPDATE sub_categories SET name=?, product_type=? WHERE id=?",
+                    (name, product_type, category_id),
+                )
+                db.execute("UPDATE products SET sub_category=?, category=? WHERE sub_category=?", (name, name, row["name"]))
+                db.commit()
+                flash("Sub category updated.", "success")
+            except IntegrityError:
+                db.rollback()
+                flash("That sub category already exists for this product type.", "error")
+    elif action == "delete":
+        category_id = request.form.get("category_id")
+        row = db.execute("SELECT * FROM sub_categories WHERE id=?", (category_id,)).fetchone()
+        if not row:
+            flash("Sub category not found.", "error")
+        else:
+            in_use = db.execute(
+                "SELECT COUNT(*) AS count FROM products WHERE sub_category=? OR category=?",
+                (row["name"], row["name"]),
+            ).fetchone()["count"]
+            if in_use:
+                flash("Cannot delete a sub category that still has products.", "error")
+            else:
+                db.execute("DELETE FROM sub_categories WHERE id=?", (category_id,))
+                db.commit()
+                flash("Sub category deleted.", "success")
+
+
 def save_product_from_form(product_id=None):
     fields = {
         key: request.form.get(key, "").strip()
@@ -1536,9 +2340,10 @@ def save_product_from_form(product_id=None):
     tags_stored = ",".join(product_tags)
     hashtags_stored = ",".join(product_hashtags)
     try:
-        price = float(request.form.get("price", 0))
+        price_eur = float(request.form.get("price", 0))
     except ValueError:
-        price = 0
+        price_eur = 0
+    price = round(price_eur * EUR_TO_STORE, 2)
     try:
         discount_percent = float(request.form.get("discount_percent", 0) or 0)
     except ValueError:
@@ -1559,13 +2364,25 @@ def save_product_from_form(product_id=None):
         pakistan_discount_percent = float(request.form.get("pakistan_discount_percent", 0) or 0)
     except ValueError:
         pakistan_discount_percent = 0
+    try:
+        rating = float(request.form.get("rating", 0) or 0)
+    except ValueError:
+        rating = 0
+    try:
+        likes = int(float(request.form.get("likes", 0) or 0))
+    except ValueError:
+        likes = 0
     discount_percent = max(0.0, min(100.0, discount_percent))
     pakistan_discount_percent = max(0.0, min(100.0, pakistan_discount_percent))
     weight = max(0.0, weight)
     packing_weight = max(0.0, packing_weight)
     pakistan_price = max(0.0, pakistan_price)
+    rating = max(0.0, min(5.0, rating))
+    likes = max(0, likes)
+    featured = 1 if request.form.get("featured") else 0
+    deal_of_week = 1 if request.form.get("deal_of_week") else 0
     stock = sum(entry["quantity"] for entry in color_rows)
-    allowed_subs = SUB_CATEGORIES.get(fields["product_type"], [])
+    allowed_subs = load_sub_categories().get(fields["product_type"], [])
     if (
         not fields["name"]
         or not fields["sku"]
@@ -1583,7 +2400,7 @@ def save_product_from_form(product_id=None):
         raise ValueError("Complete name, SKU, condition, categories, product type, size, description, price, colours, and stock.")
     if fields["product_type"] not in PRODUCT_TYPES:
         raise ValueError("Choose Clothes, Shoes, or Accessories.")
-    if fields["main_category"] not in MAIN_CATEGORIES:
+    if fields["main_category"] not in load_main_categories():
         raise ValueError("Choose a valid main category.")
     if fields["sub_category"] not in allowed_subs:
         raise ValueError("Choose a valid sub category for this product type.")
@@ -1594,6 +2411,7 @@ def save_product_from_form(product_id=None):
     if fields["region_visibility"] not in {key for key, _ in REGION_OPTIONS}:
         raise ValueError("Choose where this product should be shown.")
     category = fields["sub_category"]
+    listed_by = current_listing_owner()
     db = get_db()
     colors_legacy = ",".join(entry["name"] for entry in color_rows)
     sizes_legacy = ",".join(size_rows)
@@ -1609,20 +2427,23 @@ def save_product_from_form(product_id=None):
         hashtags_stored,
     )
     if product_id is None:
-        db.execute(
+        cursor = db.execute(
             """
             INSERT INTO products (
-                name,category,price,rating,reviews_count,sku,image,sizes,colors,
+                name,category,price,rating,reviews_count,likes,sku,image,sizes,colors,
                 description,stock,active,colors_json,sizes_json,amazon_url,etsy_url,ebay_url,
                 discount_percent,weight,shipping_json,pakistan_price,pakistan_discount_percent,
                 condition,main_category,sub_category,product_type,size_group,packing_weight,region_visibility,
-                product_tags,product_hashtags
-            ) VALUES (?,?,?,0,0,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                product_tags,product_hashtags,featured,deal_of_week,listed_by
+            ) VALUES (?,?,?,?,0,?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            RETURNING id
             """,
             (
                 fields["name"],
                 category,
                 price,
+                rating,
+                likes,
                 fields["sku"],
                 "",
                 sizes_legacy,
@@ -1640,25 +2461,31 @@ def save_product_from_form(product_id=None):
                 pakistan_price,
                 pakistan_discount_percent,
                 *extra_fields,
+                featured,
+                deal_of_week,
+                listed_by,
             ),
         )
+        product_id = cursor.fetchone()["id"]
     else:
         active = 1 if request.form.get("active") else 0
         db.execute(
             """
             UPDATE products SET
-                name=?, category=?, price=?, sku=?, sizes=?, colors=?,
+                name=?, category=?, price=?, rating=?, likes=?, sku=?, sizes=?, colors=?,
                 description=?, stock=?, active=?, colors_json=?, sizes_json=?,
                 amazon_url=?, etsy_url=?, ebay_url=?, discount_percent=?, weight=?, shipping_json=?,
                 pakistan_price=?, pakistan_discount_percent=?, condition=?, main_category=?,
                 sub_category=?, product_type=?, size_group=?, packing_weight=?, region_visibility=?,
-                product_tags=?, product_hashtags=?
+                product_tags=?, product_hashtags=?, featured=?, deal_of_week=?
             WHERE id=?
             """,
             (
                 fields["name"],
                 category,
                 price,
+                rating,
+                likes,
                 fields["sku"],
                 sizes_legacy,
                 colors_legacy,
@@ -1676,31 +2503,37 @@ def save_product_from_form(product_id=None):
                 pakistan_price,
                 pakistan_discount_percent,
                 *extra_fields,
+                featured,
+                deal_of_week,
                 product_id,
             ),
         )
+    if deal_of_week:
+        db.execute("UPDATE products SET deal_of_week=0 WHERE id!=?", (product_id,))
     db.commit()
     save_product_images(fields["sku"], slots=10)
 
 
 def product_form_context(item=None):
     existing_sizes = item["size_rows"] if item else []
+    extra_sizes = extra_sizes_of(item)
     return {
         "product": item,
         "product_types": PRODUCT_TYPES,
-        "main_categories": MAIN_CATEGORIES,
-        "sub_categories": SUB_CATEGORIES,
+        "main_categories": load_main_categories(),
+        "sub_categories": load_sub_categories(),
         "size_groups": SIZE_GROUPS,
         "conditions": CONDITIONS,
         "region_options": REGION_OPTIONS,
-        "color_slots": empty_color_slots(item["color_rows"] if item else None),
+        "color_slots": empty_color_slots(item["color_rows"] if item else None, extra_sizes),
         "size_slots_by_type": size_slots_by_type(existing_sizes),
         "shipping_slots": product_shipping_slots(item.get("shipping") if item else None),
-        "custom_shoe_sizes": ", ".join(
-            size
-            for size in existing_sizes
-            if item and item.get("product_type") == "Shoes" and size not in SHOE_SIZES
-        ),
+        "extra_sizes": extra_sizes,
+        "custom_sizes": ", ".join(extra_sizes),
+        "custom_shoe_sizes": ", ".join(extra_sizes) if item and item.get("product_type") == "Shoes" else "",
+        "image_slots": product_image_slots(item),
+        "dashboard_url": staff_home(),
+        "price_eur": item["price_eur"] if item else "",
     }
 
 
@@ -1962,6 +2795,69 @@ PL_USERNAME = os.environ.get("PL_USERNAME", "")
 PL_PASSWORD_HASH = os.environ.get("PL_PASSWORD_HASH", "")
 
 
+def find_pl_user(username):
+    username = (username or "").strip().lower()
+    if not username:
+        return None
+    return get_db().execute("SELECT * FROM pl_users WHERE LOWER(username)=?", (username,)).fetchone()
+
+
+def authenticate_pl(username, password):
+    row = find_pl_user(username)
+    if row and check_password_hash(row["password_hash"], password):
+        return row
+    env_username = (PL_USERNAME or "").strip()
+    if env_username and PL_PASSWORD_HASH and username.strip() == env_username and check_password_hash(PL_PASSWORD_HASH, password):
+        return {"username": env_username, "display_name": "Listing team"}
+    return None
+
+
+def upsert_pl_user(username, display_name, password):
+    username = (username or "").strip().lower()
+    display_name = (display_name or "").strip()
+    if not username or not display_name or not password:
+        raise ValueError("Username, display name, and password are required.")
+    db = get_db()
+    password_hash = generate_password_hash(password)
+    existing = find_pl_user(username)
+    if existing:
+        db.execute(
+            "UPDATE pl_users SET display_name=?, password_hash=? WHERE id=?",
+            (display_name, password_hash, existing["id"]),
+        )
+    else:
+        db.execute(
+            "INSERT INTO pl_users (username, display_name, password_hash, created_at) VALUES (?,?,?,?)",
+            (username, display_name, password_hash, datetime.utcnow().isoformat()),
+        )
+    db.commit()
+
+
+def current_listing_owner():
+    if session.get("is_pl"):
+        return (session.get("pl_username") or "").strip() or "listing-team"
+    return "admin"
+
+
+def product_listed_by(row):
+    if not row:
+        return "admin"
+    owner = (row.get("listed_by") if isinstance(row, dict) else None) or "admin"
+    return str(owner).strip() or "admin"
+
+
+def pl_can_manage(row):
+    username = (session.get("pl_username") or "").strip()
+    return bool(username) and product_listed_by(row) == username
+
+
+def fetch_pl_owned_product(product_id):
+    row = get_db().execute("SELECT * FROM products WHERE id=?", (product_id,)).fetchone()
+    if not row or not pl_can_manage(row):
+        abort(404)
+    return row
+
+
 def pl_required(view):
     @wraps(view)
     def wrapped(*args, **kwargs):
@@ -1978,14 +2874,14 @@ def pl_login():
     if request.method == "POST":
         username = request.form.get("username", "")
         password = request.form.get("password", "")
-        if not PL_PASSWORD_HASH:
-            flash("PL password hash is not configured. Set PL_PASSWORD_HASH in .env.", "error")
-        elif username == PL_USERNAME and check_password_hash(PL_PASSWORD_HASH, password):
+        user = authenticate_pl(username, password)
+        if user:
             session["is_pl"] = True
-            flash("Welcome to the listing dashboard.", "success")
+            session["pl_username"] = user["username"]
+            session["pl_display_name"] = user.get("display_name") or user["username"]
+            flash(f"Welcome, {session['pl_display_name']}.", "success")
             return redirect(url_for("pl_dashboard"))
-        else:
-            flash("Incorrect username or password.", "error")
+        flash("Incorrect username or password.", "error")
     return render_template("pl_login.html")
 
 
@@ -1993,6 +2889,8 @@ def pl_login():
 @pl_required
 def pl_logout():
     session.pop("is_pl", None)
+    session.pop("pl_username", None)
+    session.pop("pl_display_name", None)
     flash("You have been signed out.", "success")
     return redirect(url_for("pl_login"))
 
@@ -2001,8 +2899,41 @@ def pl_logout():
 @pl_required
 def pl_dashboard():
     db = get_db()
-    listings = db.execute("SELECT * FROM product_listings ORDER BY id DESC").fetchall()
-    return render_template("pl_dashboard.html", listings=listings)
+    username = (session.get("pl_username") or "").strip()
+    products = [
+        product(row)
+        for row in db.execute("SELECT * FROM products WHERE listed_by=? ORDER BY id DESC", (username,)).fetchall()
+    ]
+    return render_template("pl_dashboard.html", products=products)
+
+
+@app.route("/pl/main-categories", methods=["GET", "POST"])
+@pl_required
+def pl_main_categories():
+    if request.method == "POST":
+        handle_main_category_form()
+        return redirect(url_for("pl_main_categories"))
+    return render_template(
+        "manage_main_categories.html",
+        categories=get_db().execute("SELECT * FROM main_categories ORDER BY id").fetchall(),
+        back_url=url_for("pl_dashboard"),
+        save_url=url_for("pl_main_categories"),
+    )
+
+
+@app.route("/pl/sub-categories", methods=["GET", "POST"])
+@pl_required
+def pl_sub_categories():
+    if request.method == "POST":
+        handle_sub_category_form()
+        return redirect(url_for("pl_sub_categories"))
+    return render_template(
+        "manage_sub_categories.html",
+        categories=get_db().execute("SELECT * FROM sub_categories ORDER BY product_type, id").fetchall(),
+        product_types=PRODUCT_TYPES,
+        back_url=url_for("pl_dashboard"),
+        save_url=url_for("pl_sub_categories"),
+    )
 
 
 @app.route("/pl/new", methods=["GET", "POST"])
@@ -2010,39 +2941,37 @@ def pl_dashboard():
 def pl_listing_new():
     if request.method == "POST":
         try:
-            save_listing_from_form()
-            flash("Listing created successfully.", "success")
+            save_product_from_form()
+            flash("Product created successfully.", "success")
             return redirect(url_for("pl_dashboard"))
         except (IntegrityError, ValueError) as error:
-            flash(f"Listing was not saved: {error}", "error")
-    return render_template("pl_listing_form.html", listing=None)
+            flash(f"Product was not saved: {error}", "error")
+    return render_template("admin_product_form.html", **product_form_context())
 
 
-@app.route("/pl/<int:listing_id>/edit", methods=["GET", "POST"])
+@app.route("/pl/<int:product_id>/edit", methods=["GET", "POST"])
 @pl_required
-def pl_listing_edit(listing_id):
-    db = get_db()
-    row = db.execute("SELECT * FROM product_listings WHERE id=?", (listing_id,)).fetchone()
-    if not row:
-        abort(404)
+def pl_listing_edit(product_id):
+    row = fetch_pl_owned_product(product_id)
+    item = product(row)
     if request.method == "POST":
         try:
-            save_listing_from_form(listing_id=listing_id)
-            flash("Listing updated successfully.", "success")
+            save_product_from_form(product_id=product_id)
+            flash("Product updated successfully.", "success")
             return redirect(url_for("pl_dashboard"))
         except (IntegrityError, ValueError) as error:
-            flash(f"Listing was not updated: {error}", "error")
-            row = db.execute("SELECT * FROM product_listings WHERE id=?", (listing_id,)).fetchone()
-    return render_template("pl_listing_form.html", listing=row)
+            flash(f"Product was not updated: {error}", "error")
+            item = product(fetch_pl_owned_product(product_id))
+    return render_template("admin_product_form.html", **product_form_context(item))
 
 
-@app.post("/pl/<int:listing_id>/delete")
+@app.post("/pl/<int:product_id>/delete")
 @pl_required
-def pl_listing_delete(listing_id):
-    db = get_db()
-    db.execute("DELETE FROM product_listings WHERE id=?", (listing_id,))
-    db.commit()
-    flash("Listing deleted.", "success")
+def pl_listing_delete(product_id):
+    fetch_pl_owned_product(product_id)
+    get_db().execute("DELETE FROM products WHERE id=? AND listed_by=?", (product_id, session.get("pl_username")))
+    get_db().commit()
+    flash("Product deleted.", "success")
     return redirect(url_for("pl_dashboard"))
 
 

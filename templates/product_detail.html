@@ -4,7 +4,7 @@
 <main class="max-w-6xl mx-auto px-4 py-10 w-full">
   <section class="bg-white border border-red-100 rounded-3xl p-5 md:p-9 grid md:grid-cols-2 gap-8">
     <div>
-      <img id="mainProductImage" src="{{ product.gallery[0] }}" alt="{{ product.name }}" class="w-full h-96 rounded-2xl object-cover transition">
+      <img id="mainProductImage" src="{{ product.image or (product.gallery[0] if product.gallery else '') }}" alt="{{ product.name }}" class="w-full h-96 rounded-2xl object-cover transition">
       <div class="flex flex-wrap gap-2 mt-3">
         {% for image in product.gallery %}
         <button type="button" data-image="{{ image }}" class="gallery-thumb border-2 border-transparent hover:border-red-600 rounded-lg overflow-hidden">
@@ -20,7 +20,13 @@
       </div>
       <h1 class="text-3xl font-black mt-4">{{ product.name }}</h1>
       <p class="text-xs text-slate-500 mt-1">{{ product.condition_label }}{% if product.size_group %} · {{ product.size_group }}{% endif %}{% if product.product_type %} · {{ product.product_type }}{% endif %}</p>
-      <p class="star text-sm my-2">★★★★★ <b class="text-slate-700">{{ product.rating }}/5</b> <a href="#reviews" class="text-slate-400">{{ product.reviews_count }} reviews</a></p>
+      <p class="star text-sm my-2">{{ product.stars }} <b class="text-slate-700">{{ product.rating }}/5</b> <a href="#reviews" class="text-slate-400">{{ product.reviews_count }} reviews</a></p>
+      <form method="post" action="{{ url_for('like_product', product_id=product.id) }}" class="mb-3">
+        <button class="text-sm font-bold {% if product.id in liked_ids %}text-red-600{% else %}text-slate-500{% endif %}">
+          <i class="fa-{{ 'solid' if product.id in liked_ids else 'regular' }} fa-heart text-red-600"></i>
+          {{ product.likes }} likes{% if product.id in liked_ids %} · Liked{% endif %}
+        </button>
+      </form>
       <div class="my-4">
         {% if product.display_discount_percent %}
         <span class="inline-block bg-red-600 text-white text-xs font-black px-2 py-1 rounded mb-2">-{{ product.display_discount_percent|int }}% off</span>
@@ -73,8 +79,14 @@
           <p id="variantStockMessage" class="text-xs text-slate-500 mt-2"></p>
         </div>
 
+        <div>
+          <b class="text-xs uppercase text-slate-500">Quantity</b>
+          <input required type="number" min="1" name="quantity" value="1" class="w-28 border rounded-xl p-3 text-sm mt-2">
+        </div>
+
         <div class="grid sm:grid-cols-2 gap-3">
-          <button class="w-full bg-red-600 text-white font-bold rounded-xl py-3 text-sm">Buy now / Add to cart</button>
+          <button name="intent" value="cart" class="w-full bg-red-600 text-white font-bold rounded-xl py-3 text-sm">Add to cart</button>
+          <button name="intent" value="buy" class="w-full border border-red-600 text-red-700 font-bold rounded-xl py-3 text-sm">Buy now</button>
           {% if product.has_marketplace_links %}
           {% if product.ebay_url %}
           <a target="_blank" rel="noopener" href="{{ product.ebay_url }}" class="w-full text-center border border-slate-300 rounded-xl py-3 text-sm font-bold hover:bg-slate-50">Check price on eBay</a>

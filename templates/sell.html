@@ -25,5 +25,23 @@
     </div>
     <button class="w-full py-3 bg-emerald-600 text-white rounded-xl font-bold">Submit for review</button>
   </form>
+
+  <section class="bg-white border border-red-100 rounded-3xl p-7 mt-7">
+    <h2 class="text-xl font-black mb-4">Your submissions</h2>
+    {% for listing in listings %}
+    <article class="border-t py-4 text-sm">
+      <div class="flex justify-between gap-3">
+        <b>{{ listing.title }}</b>
+        <span class="text-xs font-bold {% if listing.status=='approved' %}text-emerald-700{% elif listing.status=='rejected' %}text-red-600{% else %}text-amber-700{% endif %}">{{ listing.status|capitalize }}</span>
+      </div>
+      <p class="text-xs text-slate-500 mt-1">{{ listing.category }} · ${{ '%.2f'|format(listing.price) }}</p>
+      {% if listing.product_id %}
+      <a href="{{ url_for('product_detail', product_id=listing.product_id) }}" class="text-red-600 text-xs font-bold">View in shop</a>
+      {% endif %}
+    </article>
+    {% else %}
+    <p class="text-sm text-slate-500">No listings submitted yet.</p>
+    {% endfor %}
+  </section>
 </main>
 {% endblock %}

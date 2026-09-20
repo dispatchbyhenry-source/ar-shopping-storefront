@@ -1,14 +1,56 @@
 {% extends 'base.html' %}
 {% block title %}Your profile | AR Shopping World{% endblock %}
 {% block content %}
-<main class="max-w-lg mx-auto px-4 py-12 w-full">
+<main class="max-w-3xl mx-auto px-4 py-12 w-full space-y-7">
   <form method="post" class="bg-white border border-red-100 rounded-3xl p-7 space-y-4">
     <h1 class="text-2xl font-black">Your profile</h1>
     <p class="text-sm text-slate-500">Update your details used for contact and seller listings.</p>
     <input required name="name" maxlength="100" value="{{ user.name }}" class="w-full border rounded-xl p-3 text-sm">
     <input required type="email" name="email" value="{{ user.email }}" class="w-full border rounded-xl p-3 text-sm">
+    <select name="country" class="w-full border rounded-xl p-3 text-sm">
+      {% for zone in shipping_regions %}
+      <option value="{{ zone }}" {% if (user.country or customer_region)==zone %}selected{% endif %}>{{ zone }}</option>
+      {% endfor %}
+    </select>
     <input type="password" name="password" minlength="6" placeholder="New password (optional)" class="w-full border rounded-xl p-3 text-sm">
     <button class="w-full bg-red-600 text-white font-bold py-3 rounded-xl">Save profile</button>
   </form>
+
+  <section class="bg-white border border-red-100 rounded-3xl p-7">
+    <h2 class="text-xl font-black mb-4">Your orders</h2>
+    {% for order in orders %}
+    <article class="border-t py-4">
+      <div class="flex justify-between gap-3 text-sm">
+        <b>#{{ order.id }} · {{ order.created_at[:10] }}</b>
+        <span class="price font-bold" data-pkr="{{ order.total }}"></span>
+      </div>
+      <p class="text-xs text-slate-500 mt-1">{{ order.country }} · {{ order.payment_method }} · {{ order.currency }}</p>
+      {% for item in order.items %}
+      <p class="text-xs text-slate-600 mt-1">{{ item.get('quantity', 1) }} × {{ item.get('name', 'Item') }}{% if item.get('selected_size') %} · {{ item.selected_size }}{% endif %}{% if item.get('selected_color') %} · {{ item.selected_color }}{% endif %}</p>
+      {% endfor %}
+    </article>
+    {% else %}
+    <p class="text-sm text-slate-500">No orders yet.</p>
+    {% endfor %}
+  </section>
+
+  <section class="bg-white border border-red-100 rounded-3xl p-7">
+    <div class="flex justify-between items-center mb-4">
+      <h2 class="text-xl font-black">Your seller listings</h2>
+      <a href="{{ url_for('sell') }}" class="text-red-600 text-sm font-bold">Sell a product</a>
+    </div>
+    {% for listing in listings %}
+    <article class="border-t py-4 text-sm">
+      <b>{{ listing.title }}</b>
+      <p class="text-xs text-slate-500 mt-1">{{ listing.category }} · ${{ '%.2f'|format(listing.price) }} · {{ listing.status|capitalize }}</p>
+      {% if listing.product_id %}
+      <a href="{{ url_for('product_detail', product_id=listing.product_id) }}" class="text-red-600 text-xs font-bold">View in shop</a>
+      {% endif %}
+    </article>
+    {% else %}
+    <p class="text-sm text-slate-500">You have not submitted a listing yet.</p>
+    {% endfor %}
+  </section>
 </main>
+{% include '_currency.html' %}
 {% endblock %}
