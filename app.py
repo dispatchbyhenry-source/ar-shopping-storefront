@@ -434,10 +434,135 @@ def parse_marketplace_urls():
     }
 
 
-def save_product_images(sku, slots=10):
-    folder = os.path.join(UPLOAD_ROOT, sku)
-    os.makedirs(folder, exist_ok=True)
+def product_image_name(index):
+    return "main.jpg" if index == 1 else f"{index}.jpg"
+
+
+def form_payload_bytes():
+    if not has_request_context():
+        return 0
+    return sum(len(value.encode("utf-8")) for values in request.form.listvalues() for value in values)
+
+
+def square_product_image(image):
+    image = image.convert("RGB")
+    width, height = image.size
+    side = min(width, height)
+    left = (width - side) // 2
+    top = (height - side) // 2
+    image = image.crop((left, top, left + side, top + side))
+    return image.resize((PRODUCT_IMAGE_SIZE, PRODUCT_IMAGE_SIZE), Image.Resampling.LANCZOS)
+
+
+def jpeg_bytes(image, quality):
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=quality, optimize=True)
+    return buffer.getvalue()
+
+
+def load_upload_image(uploaded):
+    if not uploaded or not uploaded.filename:
+        return None
+    extension = secure_filename(uploaded.filename).rsplit(".", 1)[-1].lower() if "." in uploaded.filename else ""
+    if extension not in ALLOWED_EXTENSIONS:
+        raise ValueError("Images must be JPG, JPEG, PNG, or WEBP files.")
+    uploaded.stream.seek(0)
+    try:
+        image = Image.open(uploaded.stream)
+        image.load()
+    except (UnidentifiedImageError, OSError) as error:
+        raise ValueError("One of the files is not a valid image.") from error
+    return square_product_image(image)
+
+
+def encode_images_within_limit(prepared, kept_bytes, text_bytes):
+    for quality in (85, 75, 65, 55, 45):
+        encoded = [(index, jpeg_bytes(image, quality)) for index, image in prepared]
+        total = text_bytes + kept_bytes + sum(len(data) for _, data in encoded)
+        if total <= MAX_PRODUCT_BYTES:
+            return encoded
+    raise ValueError("This product cannot exceed 2 MB including images. Use fewer or simpler photos.")
+
+
+def stored_product_images(product_id):
+    if not product_id:
+        return []
+    return get_db().execute(
+        "SELECT slot, byte_size FROM product_images WHERE product_id=? ORDER BY slot",
+        (product_id,),
+    ).fetchall() or []
+
+
+def product_image_url(product_id, slot, byte_size=0):
+    return f"/product-image/{int(product_id)}/{int(slot)}?v={int(byte_size or 0)}"
+
+
+def upsert_product_image(product_id, slot, data, content_type="image/jpeg"):
+    get_db().execute(
+        """
+        INSERT INTO product_images (product_id, slot, content_type, bytes, byte_size)
+        VALUES (?,?,?,?,?)
+        ON CONFLICT (product_id, slot) DO UPDATE SET
+            content_type=EXCLUDED.content_type,
+            bytes=EXCLUDED.bytes,
+            byte_size=EXCLUDED.byte_size
+        """,
+        (product_id, slot, content_type, data, len(data)),
+    )
+
+
+def migrate_disk_product_images(product_id, sku):
+    if not product_id or not sku or stored_product_images(product_id):
+        return
+    migrated = False
+    for slot in range(1, PRODUCT_IMAGE_SLOTS + 1):
+        path = os.path.join(UPLOAD_ROOT, sku, product_image_name(slot))
+        if not os.path.isfile(path):
+            continue
+        with open(path, "rb") as handle:
+            data = handle.read()
+        if not data:
+            continue
+        upsert_product_image(product_id, slot, data)
+        migrated = True
+    if migrated:
+        get_db().commit()
+
+
+def apply_product_gallery(item):
+    sku = item.get("sku") or ""
+    product_id = item.get("id")
+    migrate_disk_product_images(product_id, sku)
+    db_images = stored_product_images(product_id)
+    if db_images:
+        item["gallery"] = [product_image_url(product_id, row["slot"], row["byte_size"]) for row in db_images]
+    else:
+        local_gallery = []
+        image_folder = os.path.join(UPLOAD_ROOT, sku) if sku else ""
+        if image_folder:
+            for filename in [product_image_name(index) for index in range(1, PRODUCT_IMAGE_SLOTS + 1)]:
                 if os.path.exists(os.path.join(image_folder, filename)):
+                    local_gallery.append(f"/static/images/{sku}/{filename}")
+        fallback_image = item.get("image") or ""
+        item["gallery"] = [
+            url
+            for url in (
+                local_gallery
+                or ([fallback_image] + [image for image in GALLERY_IMAGES.get(item["category"], []) if image != fallback_image][:2])
+            )
+            if url
+        ]
+    item["image"] = item["gallery"][0] if item["gallery"] else (item.get("image") or "")
+    return item
+
+
+def save_product_images(product_id, sku=None, slots=PRODUCT_IMAGE_SLOTS):
+    if not product_id:
+        raise ValueError("Product must be saved before images can be stored.")
+    slots = min(slots or PRODUCT_IMAGE_SLOTS, PRODUCT_IMAGE_SLOTS)
+    db = get_db()
+    db.execute("DELETE FROM product_images WHERE product_id=? AND slot>?", (product_id, PRODUCT_IMAGE_SLOTS))
+    prepared = []
     for index in range(1, slots + 1):
         field = "main_image" if index == 1 else f"image_{index}"
         image = load_upload_image(request.files.get(field))
