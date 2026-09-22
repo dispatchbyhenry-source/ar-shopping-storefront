@@ -2,7 +2,8 @@
 {% block title %}Create profile | AR Shopping World{% endblock %}
 {% block content %}
 <main class="max-w-md mx-auto px-4 py-14 w-full">
-  <form method="post" class="bg-white border border-red-100 rounded-3xl p-7 shadow-sm space-y-4">
+    <form method="post" class="bg-white border border-red-100 rounded-3xl p-7 shadow-sm space-y-4">
+    <input type="hidden" name="next" value="{{ next or request.args.get('next') or '' }}">
     <div class="text-center">
       <h1 class="text-2xl font-black">Create your profile</h1>
       <p class="text-sm text-slate-500 mt-1">Needed to contact support or list a product for sale.</p>

@@ -1,0 +1,52 @@
+{% extends 'base.html' %}
+{% block title %}Order summary | AR Shopping World{% endblock %}
+{% block content %}
+<main class="max-w-4xl mx-auto px-4 py-10 w-full">
+  {% set checkout_step = 5 %}
+  {% include '_checkout_steps.html' %}
+  <h1 class="text-2xl font-black mb-2">Order summary</h1>
+  <p class="text-sm text-slate-500 mb-5">Check your items, address, shipping and payment before placing the order.</p>
+  <div class="grid lg:grid-cols-5 gap-6">
+    <div class="lg:col-span-3 space-y-4">
+      <section class="bg-white border rounded-2xl divide-y">
+        {% for item in items %}
+        <div class="p-4 flex gap-4 items-center">
+          <img src="{{ item.image }}" class="w-16 h-16 rounded-lg object-cover" alt="{{ item.name }}">
+          <div class="grow">
+            <b class="text-sm">{{ item.name }}</b>
+            <p class="text-xs text-slate-500">{{ item.quantity }} × {{ item.selected_color }} · {{ item.selected_size }}</p>
+            <span class="price text-sm font-bold" data-pkr="{{ item.subtotal_with_tax }}"></span>
+            <p class="text-[11px] text-slate-500">incl. {{ tax_percent }}% tax</p>
+          </div>
+        </div>
+        {% endfor %}
+      </section>
+      <section class="bg-white border rounded-2xl p-5 space-y-2 text-sm">
+        <div class="flex justify-between gap-3">
+          <b>Customer</b>
+          <a class="text-red-600 font-bold text-xs" href="{{ url_for('checkout_details') }}">Edit</a>
+        </div>
+        <p>{{ checkout.name }} · {{ checkout.email }}</p>
+        <p class="text-slate-500 whitespace-pre-line">{{ checkout.address }}</p>
+        <p class="text-slate-500">{{ checkout.country }} · {{ shipping_method|capitalize }} shipping</p>
+      </section>
+      <section class="bg-white border rounded-2xl p-5 space-y-2 text-sm">
+        <div class="flex justify-between gap-3">
+          <b>Payment</b>
+          <a class="text-red-600 font-bold text-xs" href="{{ url_for('checkout_payment') }}">Edit</a>
+        </div>
+        <p>{{ payment_label }}</p>
+        {% if checkout.guest and not current_user %}
+        <p class="text-xs text-slate-500">Guest checkout</p>
+        {% endif %}
+      </section>
+      <form method="post" id="checkout-summary-form" class="flex justify-between items-center gap-3">
+        <a class="text-sm font-bold text-slate-500" href="{{ url_for('checkout_payment') }}">Back</a>
+        <button type="submit" class="bg-red-600 text-white rounded-xl px-6 py-3 font-bold text-sm">Place order</button>
+      </form>
+    </div>
+    {% include '_checkout_totals.html' %}
+  </div>
+</main>
+{% include '_currency.html' %}
+{% endblock %}

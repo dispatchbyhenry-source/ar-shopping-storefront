@@ -8,6 +8,8 @@
         <p class="text-red-600 font-bold text-xs">ADMINISTRATION</p>
         <h1 class="text-3xl font-black">Store dashboard</h1>
       </div>
+      <a href="{{ url_for('admin_partners') }}" class="border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm font-bold">Partner applications</a>
+      <a href="{{ url_for('admin_orders') }}" class="border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm font-bold">Order history</a>
       <a href="{{ url_for('admin_main_categories') }}" class="border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm font-bold">Main categories</a>
       <a href="{{ url_for('admin_sub_categories') }}" class="border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm font-bold">Sub categories</a>
       <a href="{{ url_for('admin_faqs') }}" class="border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm font-bold">FAQs</a>
@@ -46,10 +48,14 @@
   </section>
 
   <section class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-    {% for label,count in [('Products',products|length),('Recent orders',orders|length),('Reviews',reviews|length),('Messages',contacts|length)] %}
+    {% for label,count,href in [('Products',products|length, url_for('admin_dashboard')),('Orders',order_count, url_for('admin_orders')),('Reviews',reviews|length, none),('Messages',contacts|length, none)] %}
     <div class="bg-white border rounded-2xl p-5">
       <small class="text-slate-400">{{ label }}</small>
+      {% if href %}
+      <a href="{{ href }}" class="block text-3xl mt-1 font-black hover:text-red-600">{{ count }}</a>
+      {% else %}
       <b class="block text-3xl mt-1">{{ count }}</b>
+      {% endif %}
     </div>
     {% endfor %}
   </section>
@@ -85,11 +91,17 @@
 
   <section class="grid lg:grid-cols-2 gap-7">
     <div class="bg-white border rounded-2xl p-5 overflow-auto">
-      <h2 class="font-black text-lg mb-4">Recent orders</h2>
+      <div class="flex justify-between items-center mb-4">
+        <h2 class="font-black text-lg">Recent orders</h2>
+        <a class="text-red-600 text-sm font-bold" href="{{ url_for('admin_orders') }}">Full history</a>
+      </div>
       {% for order in orders %}
-      <div class="border-t py-3 text-xs">
-        <b>#{{ order.id }} · {{ order.customer_name }}</b>
-        <span class="block text-slate-500">{{ order.country }} · {{ order.payment_method }} · {{ order.currency }} {{ '%.2f'|format(order.total) }}</span>
+      <div class="border-t py-3 text-xs flex justify-between gap-3">
+        <div>
+          <b>#{{ order.id }} · {{ order.customer_name }}</b>
+          <span class="block text-slate-500">{{ order.country }} · {{ order.payment_method }} · {{ order.currency }} {{ '%.2f'|format(order.total) }} · {{ (order.status or 'new')|capitalize }}</span>
+        </div>
+        <a class="text-red-600 font-bold whitespace-nowrap" href="{{ url_for('admin_order_view', order_id=order.id) }}">View</a>
       </div>
       {% else %}
       <p class="text-sm text-slate-500">No orders yet.</p>

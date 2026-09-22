@@ -1,46 +1,42 @@
 {% extends 'base.html' %}
+{% block title %}Become a partner | AR Shopping World{% endblock %}
 {% block content %}
-<main class="max-w-2xl mx-auto px-4 py-10 w-full">
-  <form method="post" enctype="multipart/form-data" class="bg-white border border-red-100 rounded-3xl p-7 space-y-4">
-    <h1 class="text-2xl font-black">List your product</h1>
-    <p class="text-sm text-slate-500">Signed in as {{ user.name }} · {{ user.email }}. Upload up to 3 images.</p>
-    <input required name="title" maxlength="100" placeholder="Item title (max 100 characters)" class="w-full border rounded-xl p-3 text-sm">
-    <div class="grid sm:grid-cols-2 gap-4">
-      <select name="category" class="border rounded-xl p-3 text-sm">
-        {% for category in categories %}
-        <option>{{ category }}</option>
-        {% endfor %}
-      </select>
-      <input required min="1" type="number" step="0.01" name="price" placeholder="Asking price (USD)" class="border rounded-xl p-3 text-sm">
-    </div>
-    <textarea required name="description" maxlength="3000" rows="6" placeholder="Describe condition, available size(s), colour and material (max 3000 characters)" class="w-full border rounded-xl p-3 text-sm"></textarea>
-    <div class="border rounded-xl p-4">
-      <b class="text-sm">Product images (3 sections)</b>
-      <p class="text-xs text-slate-500 mb-3">At least one image is required.</p>
-      <div class="grid sm:grid-cols-3 gap-3">
-        <label class="text-xs">Image 1<input required type="file" name="image_1" accept="image/jpeg,image/png,image/webp" class="block mt-1 text-xs"></label>
-        <label class="text-xs">Image 2<input type="file" name="image_2" accept="image/jpeg,image/png,image/webp" class="block mt-1 text-xs"></label>
-        <label class="text-xs">Image 3<input type="file" name="image_3" accept="image/jpeg,image/png,image/webp" class="block mt-1 text-xs"></label>
-      </div>
-    </div>
-    <button class="w-full py-3 bg-emerald-600 text-white rounded-xl font-bold">Submit for review</button>
-  </form>
+<main class="max-w-3xl mx-auto px-4 py-10 w-full space-y-6">
+  <section class="bg-white border border-red-100 rounded-3xl p-7">
+    <h1 class="text-2xl font-black">Become our partner</h1>
+    <p class="text-sm text-slate-500 mt-2">Signed in as {{ user.name }} · {{ user.email }}</p>
+  </section>
 
-  <section class="bg-white border border-red-100 rounded-3xl p-7 mt-7">
-    <h2 class="text-xl font-black mb-4">Your submissions</h2>
-    {% for listing in listings %}
+  <section class="bg-white border border-red-100 rounded-3xl p-7">
+    <h2 class="text-lg font-black">Do you want to sell your products on our website?</h2>
+    <div class="flex flex-wrap gap-3 mt-4">
+      <a href="{{ url_for('sell_seller') }}" class="bg-red-600 text-white rounded-xl px-6 py-3 text-sm font-bold">Yes</a>
+      <a href="{{ url_for('sell', seller='no') }}" class="border rounded-xl px-6 py-3 text-sm font-bold">No</a>
+    </div>
+  </section>
+
+  <section class="bg-white border border-red-100 rounded-3xl p-7">
+    <h2 class="text-lg font-black">Do you want to sell our products on other platforms as a dropshipper?</h2>
+    <div class="flex flex-wrap gap-3 mt-4">
+      <a href="{{ url_for('sell_dropship') }}" class="bg-red-600 text-white rounded-xl px-6 py-3 text-sm font-bold">Yes</a>
+      <a href="{{ url_for('sell', dropship='no') }}" class="border rounded-xl px-6 py-3 text-sm font-bold">No</a>
+    </div>
+  </section>
+
+  <section class="bg-white border border-red-100 rounded-3xl p-7">
+    <h2 class="text-lg font-black mb-4">Your applications</h2>
+    {% for item in applications %}
     <article class="border-t py-4 text-sm">
       <div class="flex justify-between gap-3">
-        <b>{{ listing.title }}</b>
-        <span class="text-xs font-bold {% if listing.status=='approved' %}text-emerald-700{% elif listing.status=='rejected' %}text-red-600{% else %}text-amber-700{% endif %}">{{ listing.status|capitalize }}</span>
+        <b>{{ item.kind_label }}{% if item.product_name %} · {{ item.product_name }}{% endif %}</b>
+        <span class="text-xs font-bold {% if item.status=='approved' %}text-emerald-700{% elif item.status=='rejected' %}text-red-600{% else %}text-amber-700{% endif %}">
+          {% if item.status=='pending' %}Waiting for admin approval{% else %}{{ item.status|capitalize }}{% endif %}
+        </span>
       </div>
-      <p class="text-xs text-slate-500 mt-1">{{ listing.category }} · ${{ '%.2f'|format(listing.price) }}</p>
-      {% if listing.product_id %}
-      <a href="{{ url_for('product_detail', product_id=listing.product_id) }}" class="text-red-600 text-xs font-bold">View in shop</a>
-      {% endif %}
+      <p class="text-xs text-slate-500 mt-1">{{ item.full_name }} · {{ item.email }} · {{ item.country }}</p>
     </article>
     {% else %}
-    <p class="text-sm text-slate-500">No listings submitted yet.</p>
+    <p class="text-sm text-slate-500">No applications yet. Choose Yes on a question above to apply.</p>
     {% endfor %}
   </section>
 </main>

@@ -19,7 +19,7 @@
         <span>SKU: {{ product.sku }}</span>
       </div>
       <h1 class="text-3xl font-black mt-4">{{ product.name }}</h1>
-      <p class="text-xs text-slate-500 mt-1">{{ product.condition_label }}{% if product.size_group %} · {{ product.size_group }}{% endif %}{% if product.product_type %} · {{ product.product_type }}{% endif %}</p>
+      <p class="text-xs text-slate-500 mt-1">{% if product.size_group %}{{ product.size_group }}{% endif %}{% if product.size_group and product.product_type %} · {% endif %}{% if product.product_type %}{{ product.product_type }}{% endif %}</p>
       <p class="star text-sm my-2">{{ product.stars }} <b class="text-slate-700">{{ product.rating }}/5</b> <a href="#reviews" class="text-slate-400">{{ product.reviews_count }} reviews</a></p>
       <form method="post" action="{{ url_for('like_product', product_id=product.id) }}" class="mb-3">
         <button class="text-sm font-bold {% if product.id in liked_ids %}text-red-600{% else %}text-slate-500{% endif %}">
@@ -28,16 +28,27 @@
         </button>
       </form>
       <div class="my-4">
-        {% if product.display_discount_percent %}
-        <span class="inline-block bg-red-600 text-white text-xs font-black px-2 py-1 rounded mb-2">-{{ product.display_discount_percent|int }}% off</span>
-        <div class="flex items-end gap-3">
-          <h2 class="price text-3xl font-black text-red-700" data-pkr="{{ product.display_price }}"></h2>
-          <span class="price text-lg text-slate-400 line-through" data-pkr="{{ product.display_original_price }}"></span>
-        </div>
-        {% else %}
-        <h2 class="price text-3xl font-black" data-pkr="{{ product.display_price }}"></h2>
-        {% endif %}
+        <h2 id="productUnitPrice" class="price text-3xl font-black" data-pkr="{{ product.display_price_with_tax }}"></h2>
+        <p class="text-xs text-slate-500 mt-1">Includes {{ tax_percent }}% tax <span id="productTaxAmount" class="price" data-pkr="{{ product.tax_amount }}"></span> · compulsory</p>
+        <p id="volumePriceNote" class="text-xs text-slate-500 mt-1"></p>
       </div>
+      {% if product.volume_tiers %}
+      <div class="border border-red-100 rounded-2xl p-4 mb-4">
+        <b class="text-sm">Volume discount</b>
+        <p class="text-xs text-slate-500 mb-3">Unit price falls when you buy more of this product.</p>
+        <div class="space-y-2">
+          {% for tier in product.volume_tiers %}
+          <div class="flex justify-between gap-3 text-sm volume-tier" data-min="{{ tier.min }}" data-percent="{{ tier.percent }}" data-price="{{ tier.unit_price }}">
+            <span>from {{ tier.min }} item{{ 's' if tier.min != 1 else '' }}</span>
+            <span class="text-right">
+              <b class="price" data-pkr="{{ tier.unit_price_with_tax }}"></b>
+              <small class="block text-slate-400">{% if tier.percent %}Savings: {{ '%.0f'|format(tier.percent) }}%/item{% else %}Savings: 0%/item{% endif %} · incl. {{ tax_percent }}% tax</small>
+            </span>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
       {% if product.weight or product.packing_weight %}
       <p class="text-sm text-slate-500 mb-3">Weight: {{ '%.2f'|format(product.weight or 0) }} kg{% if product.packing_weight %} · Packing: {{ '%.2f'|format(product.packing_weight) }} kg{% endif %}</p>
       {% endif %}
@@ -81,7 +92,7 @@
 
         <div>
           <b class="text-xs uppercase text-slate-500">Quantity</b>
-          <input required type="number" min="1" name="quantity" value="1" class="w-28 border rounded-xl p-3 text-sm mt-2">
+          <input required type="number" min="1" name="quantity" id="productQuantity" value="1" class="w-28 border rounded-xl p-3 text-sm mt-2">
         </div>
 
         <div class="grid sm:grid-cols-2 gap-3">
@@ -184,6 +195,46 @@ if (firstAvailableColor) {
 const missing = document.getElementById('missingPlatforms');
 if (missing) {
   missing.addEventListener('click', () => document.getElementById('missingPlatformsMessage').classList.remove('hidden'));
+}
+const qtyInput = document.getElementById('productQuantity');
+const unitPrice = document.getElementById('productUnitPrice');
+const productTaxAmount = document.getElementById('productTaxAmount');
+const volumeNote = document.getElementById('volumePriceNote');
+const volumeTiers = {{ product.volume_tiers|tojson }};
+const taxPercent = {{ tax_percent }};
+function formatPkr(value) {
+  return new Intl.NumberFormat(undefined, {style: 'currency', currency}).format(Number(value) * rates[currency]);
+}
+function taxOn(net) {
+  return Math.round(Number(net) * taxPercent) / 100;
+}
+function updateVolumePrice() {
+  if (!qtyInput || !volumeTiers.length) return;
+  const qty = Math.max(1, Number(qtyInput.value || 1));
+  let active = volumeTiers[0];
+  volumeTiers.forEach(tier => { if (qty >= Number(tier.min)) active = tier; });
+  const net = Number(active.unit_price);
+  const tax = taxOn(net);
+  const gross = Math.round((net + tax) * 100) / 100;
+  unitPrice.dataset.pkr = gross;
+  unitPrice.textContent = formatPkr(gross);
+  if (productTaxAmount) {
+    productTaxAmount.dataset.pkr = tax;
+    productTaxAmount.textContent = formatPkr(tax);
+  }
+  volumeNote.textContent = active.percent
+    ? `from ${active.min} items · ${Number(active.percent).toFixed(0)}% off each`
+    : '';
+  document.querySelectorAll('.volume-tier').forEach(row => {
+    row.classList.toggle('bg-red-50', Number(row.dataset.min) === Number(active.min));
+    row.classList.toggle('rounded-xl', Number(row.dataset.min) === Number(active.min));
+    row.classList.toggle('px-2', Number(row.dataset.min) === Number(active.min));
+    row.classList.toggle('py-1', Number(row.dataset.min) === Number(active.min));
+  });
+}
+if (qtyInput) {
+  qtyInput.addEventListener('input', updateVolumePrice);
+  updateVolumePrice();
 }
 </script>
 {% endblock %}

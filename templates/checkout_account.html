@@ -1,0 +1,28 @@
+{% extends 'base.html' %}
+{% block title %}Login / Guest | AR Shopping World{% endblock %}
+{% block content %}
+<main class="max-w-4xl mx-auto px-4 py-10 w-full">
+  {% set checkout_step = 2 %}
+  {% include '_checkout_steps.html' %}
+  <h1 class="text-2xl font-black mb-2">Login / Guest</h1>
+  <p class="text-sm text-slate-500 mb-6">Continue as a guest, create a profile, or sign in to use saved details.</p>
+  <div class="grid md:grid-cols-3 gap-4">
+    <form method="post" id="checkout-guest-form" class="bg-white border border-red-100 rounded-2xl p-6 flex flex-col">
+      <h2 class="font-black text-lg">Guest checkout</h2>
+      <p class="text-sm text-slate-500 mt-2 grow">Order without an account.</p>
+      <button type="submit" class="mt-5 w-full bg-red-600 text-white rounded-xl py-3 font-bold text-sm">Continue as guest</button>
+    </form>
+    <article class="bg-white border border-red-100 rounded-2xl p-6 flex flex-col">
+      <h2 class="font-black text-lg">Register now</h2>
+      <p class="text-sm text-slate-500 mt-2 grow">Save your details, track orders, and check out faster next time.</p>
+      <a class="mt-5 block text-center border-2 border-red-600 text-red-700 rounded-xl py-3 font-bold text-sm" href="{{ url_for('register', next=url_for('checkout_details')) }}">Register and continue</a>
+    </article>
+    <article class="bg-white border border-red-100 rounded-2xl p-6 flex flex-col">
+      <h2 class="font-black text-lg">Login</h2>
+      <p class="text-sm text-slate-500 mt-2 grow">Order with an existing account.</p>
+      <a class="mt-5 block text-center bg-slate-900 text-white rounded-xl py-3 font-bold text-sm" href="{{ url_for('login', next=url_for('checkout_details')) }}">Log in and continue</a>
+    </article>
+  </div>
+  <a class="inline-block mt-6 text-sm font-bold text-slate-500" href="{{ url_for('cart') }}">Back to shopping basket</a>
+</main>
+{% endblock %}

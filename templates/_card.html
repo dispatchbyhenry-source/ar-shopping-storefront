@@ -2,7 +2,7 @@
   <a href="{{ url_for('product_detail',product_id=p.id) }}" class="h-52 overflow-hidden relative">
     <img src="{{ p.image }}" alt="{{ p.name }}" class="w-full h-full object-cover">
     <span class="absolute top-2 left-2 bg-white/90 px-2 py-1 rounded text-[10px] font-bold">{{ p.main_category }}{% if p.sub_category or p.category %} · {{ p.sub_category or p.category }}{% endif %}</span>
-    {% if p.display_discount_percent %}<span class="absolute top-2 right-2 bg-red-600 text-white px-2 py-1 rounded text-[10px] font-bold">-{{ p.display_discount_percent|int }}%</span>{% endif %}
+    {% if p.volume_max_percent %}<span class="absolute top-2 right-2 bg-red-600 text-white px-2 py-1 rounded text-[10px] font-bold">up to -{{ p.volume_max_percent|int }}%</span>{% endif %}
   </a>
   <div class="p-4 flex flex-col grow">
     <div class="text-xs star flex items-center justify-between gap-2">
@@ -21,10 +21,11 @@
     </div>
     <div class="mt-auto flex justify-between items-center pt-3">
       <div>
-        {% if p.display_discount_percent %}
-        <span class="price block text-xs text-slate-400 line-through" data-pkr="{{ p.display_original_price }}"></span>
+        {% if p.volume_max_percent %}
+        <span class="block text-[10px] text-red-600 font-bold">Qty discount</span>
         {% endif %}
-        <b class="price text-red-700" data-pkr="{{ p.display_price }}"></b>
+        <b class="price text-red-700" data-pkr="{{ p.display_price_with_tax }}"></b>
+        <span class="block text-[10px] text-slate-400">incl. {{ tax_percent }}% tax</span>
       </div>
       <a href="{{ url_for('product_detail',product_id=p.id) }}" class="text-xs bg-red-50 text-red-600 p-2 rounded-lg font-bold">View product</a>
     </div>

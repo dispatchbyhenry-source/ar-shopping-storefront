@@ -1,0 +1,33 @@
+{% extends 'base.html' %}
+{% block title %}Payment | AR Shopping World{% endblock %}
+{% block content %}
+<main class="max-w-4xl mx-auto px-4 py-10 w-full">
+  {% set checkout_step = 4 %}
+  {% include '_checkout_steps.html' %}
+  <h1 class="text-2xl font-black mb-2">Payment</h1>
+  <p class="text-sm text-slate-500 mb-5">Choose how you want to pay. Card and PayPal are not active yet.</p>
+  <div class="grid lg:grid-cols-5 gap-6">
+    <form method="post" id="checkout-payment-form" class="lg:col-span-3 bg-white border rounded-2xl p-6 space-y-4">
+      <label class="block border rounded-xl p-3 cursor-pointer has-[:checked]:border-red-600 has-[:checked]:bg-red-50">
+        <input required type="radio" name="payment_method" value="pay_on_delivery" {% if checkout.payment_method != 'bank_transfer' %}checked{% endif %}>
+        <b class="text-sm">Pay on delivery</b>
+        <span class="block text-xs text-slate-500 ml-5">Pay when your order is delivered.</span>
+      </label>
+      <label class="block border rounded-xl p-3 cursor-pointer has-[:checked]:border-red-600 has-[:checked]:bg-red-50">
+        <input required type="radio" name="payment_method" value="bank_transfer" {% if checkout.payment_method == 'bank_transfer' %}checked{% endif %}>
+        <b class="text-sm">Bank transfer</b>
+        <span class="block text-xs text-slate-500 ml-5">Bank instructions are sent after the order is placed.</span>
+      </label>
+      <div class="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-800">
+        Card and PayPal payments require the client’s Stripe/PayPal merchant credentials before they can be activated securely.
+      </div>
+      <div class="flex justify-between items-center gap-3">
+        <a class="text-sm font-bold text-slate-500" href="{{ url_for('checkout_details') }}">Back</a>
+        <button type="submit" class="bg-red-600 text-white rounded-xl px-6 py-3 font-bold text-sm">Continue to summary</button>
+      </div>
+    </form>
+    {% include '_checkout_totals.html' %}
+  </div>
+</main>
+{% include '_currency.html' %}
+{% endblock %}

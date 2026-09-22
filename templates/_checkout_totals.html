@@ -1,0 +1,15 @@
+<aside class="lg:col-span-2 bg-red-950 text-white rounded-2xl p-6 h-fit">
+  <h2 class="font-black">Order summary</h2>
+  <div class="mt-4 space-y-3 text-sm">
+    <div class="flex justify-between"><span>Subtotal</span><span class="price" data-pkr="{{ total }}"></span></div>
+    <div class="flex justify-between"><span>Tax {{ tax_percent }}%</span><span class="price" data-pkr="{{ tax }}"></span></div>
+    <p class="text-xs text-red-200">{{ tax_percent }}% tax is compulsory on every product.</p>
+    <div class="flex justify-between"><span>Weight</span><span>{{ '%.2f'|format(cart_weight) }} kg</span></div>
+    <div class="flex justify-between"><span>Delivery</span><span id="shippingAmount" class="price" data-pkr="{{ shipping }}"></span></div>
+    <p id="shippingMessage" class="text-xs text-red-200">{{ shipping_label }}</p>
+    <div class="border-t border-red-800 pt-3 flex justify-between text-base font-black">
+      <span>Total</span><span id="grandAmount" class="price" data-pkr="{{ grand_total }}"></span>
+    </div>
+  </div>
+  <p class="mt-5 text-[11px] text-red-200">This order is {% if heavy_order %}over{% else %}under{% endif %} 5 kg, so the matching shipping band is applied.</p>
+</aside>

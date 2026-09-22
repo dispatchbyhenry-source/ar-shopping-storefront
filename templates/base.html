@@ -69,37 +69,26 @@
     <div class="max-w-7xl mx-auto px-4 py-3 flex items-center gap-6 overflow-x-auto text-xs font-bold">
       <a href="{{ url_for('home') }}">Home</a>
       <div class="mega-trigger">
-        <button type="button">Shop Categories <i class="fa-solid fa-chevron-down text-[9px]"></i></button>
-        <div class="mega-menu bg-white border-t border-red-100 shadow-xl">
-          <div class="mega-menu-inner grid grid-cols-2 sm:grid-cols-4 gap-5">
-            {% for group in shop_nav %}
-            <div>
-              <a class="block text-red-700 font-black mb-2" href="{{ url_for('products', main=group.name) }}">{{ group.name }}</a>
-              <a class="block py-1 text-slate-500" href="{{ url_for('products', main=group.name) }}">Shop all {{ group.name }}</a>
-              {% for sub in group.subs %}
-              <a class="block py-1" href="{{ url_for('products', main=group.name, sub=sub) }}">{{ sub }}</a>
-              {% else %}
-              <span class="block py-1 text-slate-400 font-normal">No products yet</span>
-              {% endfor %}
-            </div>
-            {% endfor %}
-          </div>
-        </div>
-      </div>
-      {% for group in shop_nav %}
-      <div class="mega-trigger">
-        <a href="{{ url_for('products', main=group.name) }}">{{ group.name }} <i class="fa-solid fa-chevron-down text-[9px]"></i></a>
+        <button type="button">Products <i class="fa-solid fa-chevron-down text-[9px]"></i></button>
         <div class="mega-menu bg-white border-t border-red-100 shadow-xl">
           <div class="mega-menu-inner">
-            <a class="block py-1 text-red-700 font-bold" href="{{ url_for('products', main=group.name) }}">All {{ group.name }}</a>
-            {% for sub in group.subs %}
-            <a class="block py-1" href="{{ url_for('products', main=group.name, sub=sub) }}">{{ sub }}</a>
-            {% endfor %}
+            <a class="inline-block text-red-700 font-black mb-4" href="{{ url_for('products') }}">All products</a>
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-5">
+              {% for group in shop_nav %}
+              <div>
+                <a class="block text-red-700 font-black mb-2" href="{{ url_for('products', main=group.name) }}">{{ group.name }}</a>
+                <a class="block py-1 text-slate-500" href="{{ url_for('products', main=group.name) }}">Shop all {{ group.name }}</a>
+                {% for sub in group.subs %}
+                <a class="block py-1" href="{{ url_for('products', main=group.name, sub=sub) }}">{{ sub }}</a>
+                {% else %}
+                <span class="block py-1 text-slate-400 font-normal">No products yet</span>
+                {% endfor %}
+              </div>
+              {% endfor %}
+            </div>
           </div>
         </div>
       </div>
-      {% endfor %}
-      <a href="{{ url_for('products') }}">All Products</a>
       <a href="{{ url_for('sell') }}">Sell Product</a>
       <a href="{{ url_for('contact') }}">Contact</a>
       {% if is_admin %}<a class="text-red-600" href="{{ url_for('admin_dashboard') }}">Admin</a>{% endif %}

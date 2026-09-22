@@ -1,4 +1,5 @@
 import ast
+import io
 import json
 import os
 import shutil
@@ -9,9 +10,12 @@ from functools import wraps
 
 import psycopg
 from dotenv import load_dotenv
-from flask import Flask, abort, flash, g, has_request_context, jsonify, redirect, render_template, request, session, url_for
+from flask import Flask, Response, abort, flash, g, has_request_context, jsonify, redirect, render_template, request, session, url_for
+from PIL import Image, UnidentifiedImageError
 from psycopg import IntegrityError
+from psycopg.errors import InFailedSqlTransaction
 from psycopg.rows import dict_row
+from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
@@ -24,6 +28,9 @@ DATABASE_URL = os.environ.get(
 )
 UPLOAD_ROOT = os.path.join(BASE_DIR, "static", "images")
 ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "webp"}
+PRODUCT_IMAGE_SIZE = 1200
+PRODUCT_IMAGE_SLOTS = 5
+MAX_PRODUCT_BYTES = 2 * 1024 * 1024
 DEFAULT_CATEGORIES = ["Shoes", "Pants", "Shirts", "Jackets", "Wallets", "Purses", "Belts"]
 
 app = Flask(__name__)
@@ -45,16 +52,18 @@ SIZE_MAP = {
     "Clothes": CLOTHES_SIZES,
     "Shoes": SHOE_SIZES,
     "Accessories": ACCESSORY_SIZES,
+    "Others": [],
 }
 ALL_CATALOG_SIZES = CLOTHES_SIZES + SHOE_SIZES + ACCESSORY_SIZES
 PRESET_SIZES = CLOTHES_SIZES
-PRODUCT_TYPES = ["Clothes", "Shoes", "Accessories"]
+PRODUCT_TYPES = ["Clothes", "Shoes", "Accessories", "Others"]
 SIZE_GROUPS = ["Male", "Female", "Unisex", "Child"]
 MAIN_CATEGORIES = ["Men", "Women", "Kids", "Unisex"]
 SUB_CATEGORIES = {
     "Clothes": ["Shirts", "Pants", "Jackets", "Hoodies", "Dresses", "Coats", "Tops"],
     "Shoes": ["Sneakers", "Boots", "Formal", "Sandals", "Sports"],
     "Accessories": ["Wallets", "Purses", "Belts", "Bags", "Hats", "Scarves"],
+    "Others": ["Others"],
 }
 CONDITIONS = [
     ("new_with_tag", "New with tag"),
@@ -69,6 +78,7 @@ REGION_OPTIONS = [
 ]
 EUR_TO_STORE = 302
 WEIGHT_LIMIT_KG = 5
+PRODUCT_TAX_PERCENT = 19
 DEFAULT_SHIPPING_ZONES = [
     {"name": "Germany", "key": "germany", "unit": "EUR", "under": 10, "over": 10, "express_under": 20, "express_over": 20},
     {"name": "Europe", "key": "europe", "unit": "EUR", "under": 20, "over": 30, "express_under": 35, "express_over": 50},
@@ -258,6 +268,23 @@ class Database:
         self._conn.close()
 
 
+def rollback_db():
+    try:
+        get_db().rollback()
+    except Exception:
+        pass
+
+
+def friendly_product_error(error):
+    text = str(error)
+    if "products_sku_key" in text:
+        sku = (request.form.get("sku") or "").strip()
+        if sku:
+            return f"SKU {sku} is already used by another product. Choose a unique SKU."
+        return "That SKU is already used by another product. Choose a unique SKU."
+    return text
+
+
 def get_db():
     if "db" not in g:
         try:
@@ -410,33 +437,67 @@ def parse_marketplace_urls():
 def save_product_images(sku, slots=10):
     folder = os.path.join(UPLOAD_ROOT, sku)
     os.makedirs(folder, exist_ok=True)
+                if os.path.exists(os.path.join(image_folder, filename)):
     for index in range(1, slots + 1):
         field = "main_image" if index == 1 else f"image_{index}"
-        target = "main.jpg" if index == 1 else f"{index}.jpg"
-        uploaded = request.files.get(field)
-        if not uploaded or not uploaded.filename:
-            continue
-        extension = secure_filename(uploaded.filename).rsplit(".", 1)[-1].lower() if "." in uploaded.filename else ""
-        if extension not in ALLOWED_EXTENSIONS:
-            raise ValueError("Images must be JPG, JPEG, PNG, or WEBP files.")
-        uploaded.save(os.path.join(folder, target))
+        image = load_upload_image(request.files.get(field))
+        if image:
+            prepared.append((index, image))
+    existing = {row["slot"]: row["byte_size"] for row in stored_product_images(product_id)}
+    if sku and not existing:
+        for index in range(1, slots + 1):
+            path = os.path.join(UPLOAD_ROOT, sku, product_image_name(index))
+            if os.path.isfile(path):
+                existing[index] = os.path.getsize(path)
+    text_bytes = form_payload_bytes()
+    kept_bytes = sum(size for slot, size in existing.items() if slot not in {item[0] for item in prepared})
+    if not prepared:
+        if text_bytes + kept_bytes > MAX_PRODUCT_BYTES:
+            raise ValueError("This product cannot exceed 2 MB including images.")
+        return
+    encoded = encode_images_within_limit(prepared, kept_bytes, text_bytes)
+    for index, data in encoded:
+        upsert_product_image(product_id, index, data)
+    first = db.execute(
+        "SELECT byte_size FROM product_images WHERE product_id=? AND slot=1",
+        (product_id,),
+    ).fetchone()
+    if first:
+        db.execute(
+            "UPDATE products SET image=? WHERE id=?",
+            (product_image_url(product_id, 1, first["byte_size"]), product_id),
+        )
 
 
 def save_listing_images(listing_id):
     folder = os.path.join(UPLOAD_ROOT, f"listing-{listing_id}")
     os.makedirs(folder, exist_ok=True)
-    saved = []
+    prepared = []
     for index in range(1, 4):
-        uploaded = request.files.get(f"image_{index}")
-        if not uploaded or not uploaded.filename:
+        image = load_upload_image(request.files.get(f"image_{index}"))
+        if image:
+            prepared.append((index, image))
+    text_bytes = form_payload_bytes()
+    kept_bytes = 0
+    for index in range(1, 4):
+        if any(item[0] == index for item in prepared):
             continue
-        extension = secure_filename(uploaded.filename).rsplit(".", 1)[-1].lower() if "." in uploaded.filename else ""
-        if extension not in ALLOWED_EXTENSIONS:
-            raise ValueError("Images must be JPG, JPEG, PNG, or WEBP files.")
-        filename = f"{index}.jpg"
-        uploaded.save(os.path.join(folder, filename))
-        saved.append(f"/static/images/listing-{listing_id}/{filename}")
-    return saved
+        path = os.path.join(folder, f"{index}.jpg")
+        if os.path.isfile(path):
+            kept_bytes += os.path.getsize(path)
+    saved = [f"/static/images/listing-{listing_id}/{index}.jpg" for index in range(1, 4) if os.path.isfile(os.path.join(folder, f"{index}.jpg"))]
+    if not prepared:
+        if text_bytes + kept_bytes > MAX_PRODUCT_BYTES:
+            raise ValueError("This listing cannot exceed 2 MB including images.")
+        return saved
+    encoded = encode_images_within_limit(prepared, kept_bytes, text_bytes)
+    for index, data in encoded:
+        with open(os.path.join(folder, f"{index}.jpg"), "wb") as handle:
+            handle.write(data)
+        path = f"/static/images/listing-{listing_id}/{index}.jpg"
+        if path not in saved:
+            saved.append(path)
+    return sorted(set(saved))
 
 
 def init_db():
@@ -568,6 +629,48 @@ def init_db():
             sort_order INTEGER NOT NULL DEFAULT 0
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS product_images (
+            id SERIAL PRIMARY KEY,
+            product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+            slot INTEGER NOT NULL CHECK (slot BETWEEN 1 AND 5),
+            content_type TEXT NOT NULL DEFAULT 'image/jpeg',
+            bytes BYTEA NOT NULL,
+            byte_size INTEGER NOT NULL CHECK (byte_size > 0 AND byte_size <= 2097152),
+            UNIQUE (product_id, slot)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS partner_applications (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER,
+            kind TEXT NOT NULL,
+            full_name TEXT NOT NULL,
+            email TEXT NOT NULL,
+            contact TEXT NOT NULL,
+            country TEXT NOT NULL,
+            product_name TEXT,
+            product_type TEXT,
+            interest TEXT,
+            sell_country TEXT,
+            platforms TEXT,
+            store_link TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            reviewed_at TEXT,
+            created_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS partner_application_images (
+            id SERIAL PRIMARY KEY,
+            application_id INTEGER NOT NULL REFERENCES partner_applications(id) ON DELETE CASCADE,
+            slot INTEGER NOT NULL CHECK (slot BETWEEN 1 AND 5),
+            content_type TEXT NOT NULL DEFAULT 'image/jpeg',
+            bytes BYTEA NOT NULL,
+            byte_size INTEGER NOT NULL CHECK (byte_size > 0 AND byte_size <= 2097152),
+            UNIQUE (application_id, slot)
+        )
+        """,
     ]
     for statement in statements:
         db.execute(statement)
@@ -579,6 +682,10 @@ def init_db():
             "country": "TEXT NOT NULL DEFAULT 'Germany'",
             "payment_method": "TEXT NOT NULL DEFAULT 'pay_on_delivery'",
             "shipping": "DOUBLE PRECISION NOT NULL DEFAULT 0",
+            "tax": "DOUBLE PRECISION NOT NULL DEFAULT 0",
+            "status": "TEXT NOT NULL DEFAULT 'new'",
+            "tracking_carrier": "TEXT",
+            "tracking_number": "TEXT",
         },
     )
     ensure_columns(
@@ -608,6 +715,7 @@ def init_db():
             "featured": "INTEGER NOT NULL DEFAULT 0",
             "deal_of_week": "INTEGER NOT NULL DEFAULT 0",
             "listed_by": "TEXT NOT NULL DEFAULT 'admin'",
+            "volume_discounts": "TEXT",
         },
     )
     ensure_columns("users", {"country": "TEXT"})
@@ -641,6 +749,10 @@ def init_db():
             "INSERT INTO sub_categories (name, product_type) VALUES (?,?)",
             [(name, product_type) for product_type, names in SUB_CATEGORIES.items() for name in names],
         )
+    db.execute(
+        "INSERT INTO sub_categories (name, product_type) VALUES (?,?) ON CONFLICT (name, product_type) DO NOTHING",
+        ("Others", "Others"),
+    )
     if not db.execute("SELECT 1 AS ok FROM faqs LIMIT 1").fetchone():
         db.executemany(
             "INSERT INTO faqs (question, answer, sort_order) VALUES (?,?,?)",
@@ -748,6 +860,7 @@ def setup():
     session.setdefault("language", "en")
     session.setdefault("cart", {})
     session.setdefault("liked", [])
+    session.setdefault("checkout", {})
 
 
 @app.context_processor
@@ -771,7 +884,96 @@ def helpers():
         "shop_nav": shop_category_tree(),
         "selected_main": request.args.get("main", ""),
         "selected_sub": request.args.get("sub", ""),
+        "tax_percent": PRODUCT_TAX_PERCENT,
     }
+
+
+def parse_volume_discounts_stored(raw):
+    try:
+        data = json.loads(raw or "[]")
+    except (TypeError, json.JSONDecodeError):
+        data = []
+    tiers = []
+    seen = set()
+    for entry in data if isinstance(data, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            minimum = int(entry.get("min", 0) or 0)
+            percent = float(entry.get("percent", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if minimum < 1 or minimum in seen:
+            continue
+        seen.add(minimum)
+        tiers.append({"min": minimum, "percent": max(0.0, min(100.0, percent))})
+    tiers.sort(key=lambda tier: tier["min"])
+    return tiers
+
+
+def parse_volume_discounts_form():
+    tiers = []
+    seen = set()
+    for index in range(1, 6):
+        try:
+            minimum = int(request.form.get(f"volume_min_{index}", 0) or 0)
+        except ValueError:
+            minimum = 0
+        try:
+            percent = float(request.form.get(f"volume_percent_{index}", 0) or 0)
+        except ValueError:
+            percent = 0
+        if minimum < 1 or minimum in seen:
+            continue
+        seen.add(minimum)
+        tiers.append({"min": minimum, "percent": max(0.0, min(100.0, percent))})
+    tiers.sort(key=lambda tier: tier["min"])
+    return tiers
+
+
+def volume_percent_for(tiers, quantity):
+    percent = 0.0
+    for tier in tiers or []:
+        if quantity >= int(tier.get("min") or 0):
+            percent = float(tier.get("percent") or 0)
+    return percent
+
+
+def product_tax(net_amount):
+    return round(float(net_amount or 0) * PRODUCT_TAX_PERCENT / 100, 2)
+
+
+def price_with_tax(net_amount):
+    net = round(float(net_amount or 0), 2)
+    return round(net + product_tax(net), 2)
+
+
+def priced_volume_tiers(tiers, base_price):
+    rows = []
+    for tier in tiers or []:
+        percent = float(tier.get("percent") or 0)
+        unit_price = round(float(base_price or 0) * (100 - percent) / 100, 2)
+        tax_amount = product_tax(unit_price)
+        rows.append(
+            {
+                "min": int(tier["min"]),
+                "percent": percent,
+                "unit_price": unit_price,
+                "tax_amount": tax_amount,
+                "unit_price_with_tax": round(unit_price + tax_amount, 2),
+            }
+        )
+    return rows
+
+
+def volume_form_slots(existing=None):
+    slots = list(existing or [])
+    defaults = [{"min": 1, "percent": 0}, {"min": 5, "percent": 0}, {"min": 20, "percent": 0}]
+    if not slots:
+        slots = defaults
+    while len(slots) < 3:
+        slots.append({"min": "", "percent": 0})
+    return slots[:5]
 
 
 def product(row):
@@ -803,51 +1005,37 @@ def product(row):
     item["size_rows"] = item["sizes"]
     item["colors"] = [entry.get("name") or "Default" for entry in item["color_rows"]]
     item["stock"] = sum(int(entry.get("quantity", 0) or 0) for entry in item["color_rows"])
-    sku = item.get("sku") or ""
-    image_folder = os.path.join(UPLOAD_ROOT, sku) if sku else ""
-    local_gallery = []
-    if image_folder:
-        for filename in ["main.jpg"] + [f"{index}.jpg" for index in range(2, 11)]:
-            if os.path.exists(os.path.join(image_folder, filename)):
-                local_gallery.append(f"/static/images/{sku}/{filename}")
-    fallback_image = item.get("image") or ""
-    item["gallery"] = [url for url in (local_gallery or ([fallback_image] + [image for image in GALLERY_IMAGES.get(item["category"], []) if image != fallback_image][:2])) if url]
-    item["image"] = item["gallery"][0] if item["gallery"] else fallback_image
+    apply_product_gallery(item)
     item["amazon_url"] = item.get("amazon_url") or ""
     item["etsy_url"] = item.get("etsy_url") or ""
     item["ebay_url"] = item.get("ebay_url") or ""
     try:
-        discount = max(0.0, min(100.0, float(item.get("discount_percent") or 0)))
-    except (TypeError, ValueError):
-        discount = 0.0
-    try:
         weight = max(0.0, float(item.get("weight") or 0))
     except (TypeError, ValueError):
         weight = 0.0
-    try:
-        pakistan_discount = max(0.0, min(100.0, float(item.get("pakistan_discount_percent") or 0)))
-    except (TypeError, ValueError):
-        pakistan_discount = 0.0
     original_price = float(item.get("price") or 0)
     try:
         pakistan_original = max(0.0, float(item.get("pakistan_price") or 0))
     except (TypeError, ValueError):
         pakistan_original = 0.0
-    item["discount_percent"] = discount
-    item["pakistan_discount_percent"] = pakistan_discount
     item["weight"] = weight
     item["original_price"] = original_price
-    item["price"] = round(original_price * (100 - discount) / 100, 2)
+    item["price"] = original_price
     item["pakistan_original_price"] = pakistan_original
-    item["pakistan_price"] = round(pakistan_original * (100 - pakistan_discount) / 100, 2)
+    item["pakistan_price"] = pakistan_original
     if pakistan_customer() and pakistan_original > 0:
         item["display_original_price"] = pakistan_original
-        item["display_price"] = item["pakistan_price"]
-        item["display_discount_percent"] = pakistan_discount
+        item["display_price"] = pakistan_original
     else:
         item["display_original_price"] = original_price
-        item["display_price"] = item["price"]
-        item["display_discount_percent"] = discount
+        item["display_price"] = original_price
+    item["volume_discounts"] = parse_volume_discounts_stored(item.get("volume_discounts"))
+    item["volume_tiers"] = priced_volume_tiers(item["volume_discounts"], item["display_price"])
+    item["volume_max_percent"] = max((tier["percent"] for tier in item["volume_discounts"]), default=0)
+    item["display_discount_percent"] = 0
+    item["tax_percent"] = PRODUCT_TAX_PERCENT
+    item["tax_amount"] = product_tax(item["display_price"])
+    item["display_price_with_tax"] = price_with_tax(item["display_price"])
     item["shipping"] = normalize_product_shipping(item.get("shipping_json"))
     try:
         packing_weight = max(0.0, float(item.get("packing_weight") or 0))
@@ -922,6 +1110,49 @@ def listing_view(row):
     item = dict(row) if not isinstance(row, dict) else dict(row)
     item["images"] = listing_images(item)
     item["status"] = item.get("status") or "pending"
+    return item
+
+
+def upsert_partner_image(application_id, slot, data, content_type="image/jpeg"):
+    get_db().execute(
+        """
+        INSERT INTO partner_application_images (application_id, slot, content_type, bytes, byte_size)
+        VALUES (?,?,?,?,?)
+        ON CONFLICT (application_id, slot) DO UPDATE SET
+            content_type=EXCLUDED.content_type,
+            bytes=EXCLUDED.bytes,
+            byte_size=EXCLUDED.byte_size
+        """,
+        (application_id, slot, content_type, data, len(data)),
+    )
+
+
+def save_partner_images(application_id):
+    prepared = []
+    for index in range(1, PRODUCT_IMAGE_SLOTS + 1):
+        image = load_upload_image(request.files.get(f"image_{index}"))
+        if image:
+            prepared.append((index, image))
+    if not prepared:
+        raise ValueError("Please upload at least one product image.")
+    encoded = encode_images_within_limit(prepared, 0, form_payload_bytes())
+    for index, data in encoded:
+        upsert_partner_image(application_id, index, data)
+
+
+def partner_image_urls(application_id):
+    rows = get_db().execute(
+        "SELECT slot, byte_size FROM partner_application_images WHERE application_id=? ORDER BY slot",
+        (application_id,),
+    ).fetchall() or []
+    return [f"/partner-image/{application_id}/{row['slot']}?v={row['byte_size']}" for row in rows]
+
+
+def partner_application_view(row):
+    item = dict(row) if not isinstance(row, dict) else dict(row)
+    item["images"] = partner_image_urls(item["id"])
+    item["status"] = item.get("status") or "pending"
+    item["kind_label"] = "Sell on our website" if item.get("kind") == "seller" else "Dropshipper"
     return item
 
 
@@ -1000,12 +1231,23 @@ def approve_seller_listing(listing_id):
     product_id = cursor.fetchone()["id"]
     dest = os.path.join(UPLOAD_ROOT, sku)
     os.makedirs(dest, exist_ok=True)
-    for index, url in enumerate(images[:10], start=1):
+    for index, url in enumerate(images[:PRODUCT_IMAGE_SLOTS], start=1):
         src = os.path.join(BASE_DIR, str(url).lstrip("/"))
         if not os.path.exists(src):
             continue
         target = "main.jpg" if index == 1 else f"{index}.jpg"
         shutil.copy2(src, os.path.join(dest, target))
+        with open(os.path.join(dest, target), "rb") as handle:
+            upsert_product_image(product_id, index, handle.read())
+    first = db.execute(
+        "SELECT byte_size FROM product_images WHERE product_id=? AND slot=1",
+        (product_id,),
+    ).fetchone()
+    if first:
+        db.execute(
+            "UPDATE products SET image=? WHERE id=?",
+            (product_image_url(product_id, 1, first["byte_size"]), product_id),
+        )
     db.execute(
         "UPDATE listings SET status=?, reviewed_at=?, product_id=? WHERE id=?",
         ("approved", datetime.utcnow().isoformat(), product_id, listing_id),
@@ -1056,7 +1298,11 @@ def product_sub_category(item):
 
 def shop_category_tree(items=None):
     if items is None:
-        items = visible_catalog(get_db().execute("SELECT * FROM products WHERE active=1").fetchall())
+        try:
+            items = visible_catalog(get_db().execute("SELECT * FROM products WHERE active=1").fetchall())
+        except InFailedSqlTransaction:
+            rollback_db()
+            items = visible_catalog(get_db().execute("SELECT * FROM products WHERE active=1").fetchall())
     mains = load_main_categories()
     grouped = {name: [] for name in mains}
     fallback = mains[0] if mains else "Unisex"
@@ -1246,14 +1492,20 @@ def staff_home():
 
 
 def product_image_slots(item=None):
-    sku = (item or {}).get("sku") or ""
+    item = item or {}
+    product_id = item.get("id")
+    sku = item.get("sku") or ""
+    stored = {row["slot"]: row["byte_size"] for row in stored_product_images(product_id)}
     slots = []
-    for index in range(1, 11):
-        filename = "main.jpg" if index == 1 else f"{index}.jpg"
-        path = os.path.join(UPLOAD_ROOT, sku, filename) if sku else ""
+    for index in range(1, PRODUCT_IMAGE_SLOTS + 1):
         url = ""
-        if sku and os.path.exists(path):
-            url = f"/static/images/{sku}/{filename}?v={int(os.path.getmtime(path))}"
+        if product_id and index in stored:
+            url = product_image_url(product_id, index, stored[index])
+        else:
+            filename = product_image_name(index)
+            path = os.path.join(UPLOAD_ROOT, sku, filename) if sku else ""
+            if sku and os.path.exists(path):
+                url = f"/static/images/{sku}/{filename}?v={int(os.path.getmtime(path))}"
         slots.append(
             {
                 "index": index,
@@ -1420,6 +1672,44 @@ def products():
     )
 
 
+@app.route("/product-image/<int:product_id>/<int:slot>")
+def product_image(product_id, slot):
+    if slot < 1 or slot > PRODUCT_IMAGE_SLOTS:
+        abort(404)
+    row = get_db().execute(
+        "SELECT bytes, content_type FROM product_images WHERE product_id=? AND slot=?",
+        (product_id, slot),
+    ).fetchone()
+    if not row or not row.get("bytes"):
+        abort(404)
+    data = row["bytes"]
+    if isinstance(data, memoryview):
+        data = data.tobytes()
+    return Response(bytes(data), mimetype=row.get("content_type") or "image/jpeg")
+
+
+@app.route("/partner-image/<int:application_id>/<int:slot>")
+def partner_image(application_id, slot):
+    if slot < 1 or slot > PRODUCT_IMAGE_SLOTS:
+        abort(404)
+    application = get_db().execute("SELECT * FROM partner_applications WHERE id=?", (application_id,)).fetchone()
+    if not application:
+        abort(404)
+    user = current_user()
+    if not session.get("is_admin") and (not user or user["id"] != application.get("user_id")):
+        abort(404)
+    row = get_db().execute(
+        "SELECT bytes, content_type FROM partner_application_images WHERE application_id=? AND slot=?",
+        (application_id, slot),
+    ).fetchone()
+    if not row or not row.get("bytes"):
+        abort(404)
+    data = row["bytes"]
+    if isinstance(data, memoryview):
+        data = data.tobytes()
+    return Response(bytes(data), mimetype=row.get("content_type") or "image/jpeg")
+
+
 @app.route("/product/<int:product_id>")
 def product_detail(product_id):
     item = fetch_product(product_id)
@@ -1577,7 +1867,9 @@ def update_cart():
 
 
 def cart_items():
-    items, total = [], 0
+    items, total, tax = [], 0, 0
+    quantities = {}
+    parsed = []
     for cart_key, quantity in session["cart"].items():
         parts = cart_key.split(":")
         item_id = parts[0]
@@ -1585,16 +1877,31 @@ def cart_items():
         selected_color = parts[2] if len(parts) > 2 else "Default"
         row = get_db().execute("SELECT * FROM products WHERE id=?", (item_id,)).fetchone()
         if row:
-            item = product(row)
-            item["quantity"] = quantity
-            item["selected_size"] = selected_size
-            item["selected_color"] = selected_color
-            item["cart_key"] = cart_key
-            item["subtotal"] = item["display_price"] * quantity
-            item["line_weight"] = float(item.get("ship_weight") or item.get("weight") or 0) * quantity
-            total += item["subtotal"]
-            items.append(item)
-    return items, total
+            parsed.append((cart_key, int(quantity), item_id, selected_size, selected_color, row))
+            quantities[str(item_id)] = quantities.get(str(item_id), 0) + int(quantity)
+    for cart_key, quantity, item_id, selected_size, selected_color, row in parsed:
+        item = product(row)
+        volume_qty = quantities.get(str(item_id), quantity)
+        percent = volume_percent_for(item.get("volume_discounts"), volume_qty)
+        unit_price = round(float(item["display_original_price"]) * (100 - percent) / 100, 2)
+        unit_tax = product_tax(unit_price)
+        item["quantity"] = quantity
+        item["selected_size"] = selected_size
+        item["selected_color"] = selected_color
+        item["cart_key"] = cart_key
+        item["volume_percent"] = percent
+        item["display_price"] = unit_price
+        item["tax_percent"] = PRODUCT_TAX_PERCENT
+        item["unit_tax"] = unit_tax
+        item["tax_amount"] = unit_tax * quantity
+        item["display_price_with_tax"] = round(unit_price + unit_tax, 2)
+        item["subtotal"] = unit_price * quantity
+        item["subtotal_with_tax"] = item["subtotal"] + item["tax_amount"]
+        item["line_weight"] = float(item.get("ship_weight") or item.get("weight") or 0) * quantity
+        total += item["subtotal"]
+        tax += item["tax_amount"]
+        items.append(item)
+    return items, total, tax
 
 
 def cart_weight_kg(items):
@@ -1723,77 +2030,263 @@ def reserve_order_stock(db, items):
         )
 
 
-@app.route("/cart", methods=["GET", "POST"])
-def cart():
-    items, total = cart_items()
-    address_zone = zone_from_address(request.form.get("address", "")) if request.method == "POST" else ""
-    if address_zone:
-        apply_region(address_zone)
-        g.customer_location = None
-    country = customer_zone_name()
-    shipping_method = request.form.get("shipping_method", "standard") if request.method == "POST" else request.args.get("shipping_method", "standard")
+PAYMENT_LABELS = {
+    "pay_on_delivery": "Pay on delivery",
+    "bank_transfer": "Bank transfer",
+}
+ORDER_STATUSES = ("new", "processing", "shipped")
+TRACKING_CARRIERS = ("dhl", "hermes")
+TRACKING_URLS = {
+    "dhl": "https://www.dhl.com/de-en/home/tracking.html?tracking-id={number}",
+    "hermes": "https://www.myhermes.de/empfangen/sendungsverfolgung/?trackingID={number}",
+}
+
+
+def tracking_url(carrier, number):
+    number = (number or "").strip()
+    carrier = (carrier or "").strip().lower()
+    template = TRACKING_URLS.get(carrier)
+    if not number or not template:
+        return ""
+    return template.format(number=number)
+
+
+def order_record(row):
+    order = dict(row) if not isinstance(row, dict) else dict(row)
+    items = parse_order_items(order.get("items"))
+    order["line_items"] = items
+    order["status"] = order.get("status") or "new"
+    order["status_index"] = ORDER_STATUSES.index(order["status"]) if order["status"] in ORDER_STATUSES else 0
+    order["tracking_carrier"] = (order.get("tracking_carrier") or "").strip().lower()
+    order["tracking_number"] = (order.get("tracking_number") or "").strip()
+    order["tracking_url"] = tracking_url(order["tracking_carrier"], order["tracking_number"])
+    order["tracking_label"] = order["tracking_carrier"].upper() if order["tracking_carrier"] in TRACKING_CARRIERS else ""
+    net = sum(float(item.get("subtotal") or 0) for item in items if isinstance(item, dict))
+    tax = float(order.get("tax") or 0)
+    if not tax:
+        tax = sum(float(item.get("tax_amount") or 0) for item in items if isinstance(item, dict))
+    shipping = float(order.get("shipping") or 0)
+    total = float(order.get("total") or 0)
+    order["items_subtotal"] = net if net else max(0.0, round(total - tax - shipping, 2))
+    order["tax"] = tax
+    order["shipping"] = shipping
+    order["payment_label"] = PAYMENT_LABELS.get(order.get("payment_method"), order.get("payment_method") or "")
+    return order
+
+
+def checkout_data():
+    data = session.get("checkout")
+    if not isinstance(data, dict):
+        data = {}
+        session["checkout"] = data
+    return data
+
+
+def save_checkout(**fields):
+    data = checkout_data()
+    data.update(fields)
+    session["checkout"] = data
+    session.modified = True
+    return data
+
+
+def safe_next(default):
+    target = (request.values.get("next") or "").strip()
+    if target.startswith("/") and not target.startswith("//") and "://" not in target:
+        return target
+    return default
+
+
+def checkout_quote(shipping_method=None):
+    items, total, tax = cart_items()
+    data = checkout_data()
+    shipping_method = shipping_method or data.get("shipping_method") or "standard"
     if shipping_method not in {"standard", "express"}:
         shipping_method = "standard"
-    valid_countries = set(ZONE_NAMES)
-    if country not in valid_countries:
+    country = data.get("country") or customer_zone_name()
+    if country not in ZONE_NAMES:
         country = customer_zone_name()
     shipping, shipping_label, weight_kg = shipping_quote(items, total, country, shipping_method)
-    if request.method == "POST":
-        name, email, address = (request.form.get(k, "").strip() for k in ("name", "email", "address"))
-        payment_method = request.form.get("payment_method", "")
-        valid_methods = {"pay_on_delivery", "bank_transfer"}
-        if not items or not name or not email or not address or country not in valid_countries or payment_method not in valid_methods:
-            flash("Add items and complete all checkout fields, including payment method.", "error")
-        else:
-            grand_total = total + shipping
-            db = get_db()
-            try:
-                reserve_order_stock(db, items)
-                db.execute(
-                    """
-                    INSERT INTO orders (
-                        customer_name,email,address,country,payment_method,currency,total,shipping,items,created_at
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?)
-                    """,
-                    (
-                        name,
-                        email,
-                        address,
-                        country,
-                        payment_method,
-                        session["currency"],
-                        grand_total,
-                        shipping,
-                        str(items),
-                        datetime.utcnow().isoformat(),
-                    ),
-                )
-                db.commit()
-                session["cart"] = {}
-                flash("Order placed successfully. We will contact you shortly.", "success")
-                return redirect(url_for("home"))
-            except ValueError as error:
-                db.rollback()
-                flash(str(error), "error")
-    return render_template(
-        "cart.html",
-        items=items,
-        total=total,
-        shipping=shipping,
-        grand_total=total + shipping,
-        shipping_label=shipping_label,
-        selected_country=country,
-        shipping_method=shipping_method,
-        cart_weight=weight_kg,
-        shipping_zones=shipping_options(items, weight_kg, shipping_method),
-        heavy_order=weight_kg > WEIGHT_LIMIT_KG,
+    return {
+        "items": items,
+        "total": total,
+        "tax": tax,
+        "shipping": shipping,
+        "shipping_label": shipping_label,
+        "grand_total": total + tax + shipping,
+        "selected_country": country,
+        "shipping_method": shipping_method,
+        "cart_weight": weight_kg,
+        "shipping_zones": shipping_options(items, weight_kg, shipping_method),
+        "heavy_order": weight_kg > WEIGHT_LIMIT_KG,
+        "checkout": data,
+    }
+
+
+def require_checkout_cart():
+    items, _, _ = cart_items()
+    if not items:
+        flash("Add items to your cart before checkout.", "error")
+        return redirect(url_for("cart"))
+    return None
+
+
+def checkout_account_ready():
+    return bool(session.get("user_id") or checkout_data().get("guest"))
+
+
+def checkout_details_ready():
+    data = checkout_data()
+    return bool(
+        data.get("name")
+        and data.get("email")
+        and data.get("address")
+        and data.get("shipping_method") in {"standard", "express"}
     )
+
+
+def checkout_payment_ready():
+    return checkout_data().get("payment_method") in {"pay_on_delivery", "bank_transfer"}
+
+
+@app.route("/cart")
+def cart():
+    return render_template("cart.html", **checkout_quote())
+
+
+@app.route("/checkout/account", methods=["GET", "POST"])
+def checkout_account():
+    blocked = require_checkout_cart()
+    if blocked:
+        return blocked
+    if session.get("user_id"):
+        save_checkout(guest=False)
+        return redirect(url_for("checkout_details"))
+    if request.method == "POST":
+        save_checkout(guest=True)
+        return redirect(url_for("checkout_details"))
+    return render_template("checkout_account.html", **checkout_quote())
+
+
+@app.route("/checkout/details", methods=["GET", "POST"])
+def checkout_details():
+    blocked = require_checkout_cart()
+    if blocked:
+        return blocked
+    if not checkout_account_ready():
+        return redirect(url_for("checkout_account"))
+    user = current_user()
+    data = checkout_data()
+    if user:
+        save_checkout(
+            guest=False,
+            name=data.get("name") or user.get("name") or "",
+            email=data.get("email") or user.get("email") or "",
+        )
+    if request.method == "POST":
+        name = request.form.get("name", "").strip()[:100]
+        email = request.form.get("email", "").strip().lower()[:120]
+        address = request.form.get("address", "").strip()
+        shipping_method = request.form.get("shipping_method", "standard")
+        if shipping_method not in {"standard", "express"}:
+            shipping_method = "standard"
+        if not name or not email or not address:
+            flash("Enter your name, email, and delivery address.", "error")
+        else:
+            address_zone = zone_from_address(address)
+            if address_zone:
+                apply_region(address_zone)
+                g.customer_location = None
+            country = customer_zone_name()
+            save_checkout(
+                name=name,
+                email=email,
+                address=address,
+                shipping_method=shipping_method,
+                country=country,
+            )
+            return redirect(url_for("checkout_payment"))
+    return render_template("checkout_details.html", **checkout_quote())
+
+
+@app.route("/checkout/payment", methods=["GET", "POST"])
+def checkout_payment():
+    blocked = require_checkout_cart()
+    if blocked:
+        return blocked
+    if not checkout_account_ready():
+        return redirect(url_for("checkout_account"))
+    if not checkout_details_ready():
+        return redirect(url_for("checkout_details"))
+    if request.method == "POST":
+        payment_method = request.form.get("payment_method", "")
+        if payment_method not in {"pay_on_delivery", "bank_transfer"}:
+            flash("Choose a payment method.", "error")
+        else:
+            save_checkout(payment_method=payment_method)
+            return redirect(url_for("checkout_summary"))
+    return render_template("checkout_payment.html", **checkout_quote())
+
+
+@app.route("/checkout/summary", methods=["GET", "POST"])
+def checkout_summary():
+    blocked = require_checkout_cart()
+    if blocked:
+        return blocked
+    if not checkout_account_ready():
+        return redirect(url_for("checkout_account"))
+    if not checkout_details_ready():
+        return redirect(url_for("checkout_details"))
+    if not checkout_payment_ready():
+        return redirect(url_for("checkout_payment"))
+    quote = checkout_quote()
+    data = checkout_data()
+    if request.method == "POST":
+        items, total, tax = quote["items"], quote["total"], quote["tax"]
+        shipping = quote["shipping"]
+        country = data.get("country") if data.get("country") in ZONE_NAMES else quote["selected_country"]
+        db = get_db()
+        try:
+            reserve_order_stock(db, items)
+            db.execute(
+                """
+                INSERT INTO orders (
+                    customer_name,email,address,country,payment_method,currency,total,shipping,tax,status,items,created_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    data.get("name"),
+                    data.get("email"),
+                    data.get("address"),
+                    country,
+                    data.get("payment_method"),
+                    session["currency"],
+                    total + tax + shipping,
+                    shipping,
+                    tax,
+                    "new",
+                    str(items),
+                    datetime.utcnow().isoformat(),
+                ),
+            )
+            db.commit()
+            session["cart"] = {}
+            session["checkout"] = {}
+            session.modified = True
+            flash("Order placed successfully. We will contact you shortly.", "success")
+            return redirect(url_for("home"))
+        except ValueError as error:
+            db.rollback()
+            flash(str(error), "error")
+    quote["payment_label"] = PAYMENT_LABELS.get(data.get("payment_method"), data.get("payment_method"))
+    return render_template("checkout_summary.html", **quote)
 
 
 @app.route("/register", methods=["GET", "POST"])
 def register():
+    next_url = safe_next(url_for("profile"))
     if session.get("user_id"):
-        return redirect(url_for("profile"))
+        return redirect(next_url)
     if request.method == "POST":
         name = request.form.get("name", "").strip()[:100]
         email = request.form.get("email", "").strip().lower()[:120]
@@ -1810,28 +2303,30 @@ def register():
                 db.commit()
                 user = db.execute("SELECT id FROM users WHERE email=?", (email,)).fetchone()
                 session["user_id"] = user["id"]
+                save_checkout(guest=False, name=name, email=email)
                 flash("Your profile is ready.", "success")
-                next_url = request.args.get("next") or url_for("profile")
                 return redirect(next_url)
             except IntegrityError:
                 flash("An account with that email already exists. Please sign in.", "error")
-    return render_template("auth_register.html")
+    return render_template("auth_register.html", next=next_url)
 
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
+    next_url = safe_next(url_for("profile"))
     if session.get("user_id"):
-        return redirect(url_for("profile"))
+        return redirect(next_url)
     if request.method == "POST":
         email = request.form.get("email", "").strip().lower()
         password = request.form.get("password", "")
         user = get_db().execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
         if user and check_password_hash(user["password_hash"], password):
             session["user_id"] = user["id"]
+            save_checkout(guest=False, name=user.get("name") or "", email=user.get("email") or "")
             flash("Welcome back.", "success")
-            return redirect(request.args.get("next") or url_for("profile"))
+            return redirect(next_url)
         flash("Incorrect email or password.", "error")
-    return render_template("auth_login.html")
+    return render_template("auth_login.html", next=next_url)
 
 
 @app.post("/logout")
@@ -1875,71 +2370,137 @@ def profile():
                 flash("That email is already in use.", "error")
         user = current_user()
     db = get_db()
-    orders = []
-    for row in db.execute("SELECT * FROM orders WHERE email=? ORDER BY id DESC", (user["email"],)).fetchall():
-        order = dict(row)
-        order["items"] = parse_order_items(order.get("items"))
-        orders.append(order)
+    orders = [order_record(row) for row in db.execute("SELECT * FROM orders WHERE email=? ORDER BY id DESC", (user["email"],)).fetchall()]
     listings = [listing_view(row) for row in db.execute("SELECT * FROM listings WHERE user_id=? ORDER BY id DESC", (user["id"],)).fetchall()]
     return render_template("profile.html", user=user, orders=orders, listings=listings)
 
 
-@app.route("/sell", methods=["GET", "POST"])
+@app.route("/sell")
 @login_required
 def sell():
     user = current_user()
-    categories = category_names()
+    if request.args.get("seller") == "no":
+        flash("You chose not to sell your products on our website.", "success")
+    if request.args.get("dropship") == "no":
+        flash("You chose not to dropship our products.", "success")
+    applications = [
+        partner_application_view(row)
+        for row in get_db().execute(
+            "SELECT * FROM partner_applications WHERE user_id=? ORDER BY id DESC",
+            (user["id"],),
+        ).fetchall()
+    ]
+    return render_template("sell.html", user=user, applications=applications)
+
+
+@app.route("/sell/seller", methods=["GET", "POST"])
+@login_required
+def sell_seller():
+    user = current_user()
     if request.method == "POST":
-        title = request.form.get("title", "").strip()[:100]
-        category = request.form.get("category", "").strip()
-        description = request.form.get("description", "").strip()[:3000]
-        try:
-            price = float(request.form.get("price", 0))
-        except ValueError:
-            price = 0
-        if not title or not category or not description or price <= 0:
-            flash("Please complete every listing field with a valid price.", "error")
-        elif category not in categories:
-            flash("Please choose a valid category.", "error")
+        fields = {
+            "full_name": request.form.get("full_name", "").strip()[:100],
+            "email": request.form.get("email", "").strip()[:120],
+            "contact": request.form.get("contact", "").strip()[:40],
+            "country": request.form.get("country", "").strip()[:80],
+            "product_name": request.form.get("product_name", "").strip()[:100],
+            "product_type": request.form.get("product_type", "").strip(),
+        }
+        if not all(fields.values()) or fields["product_type"] not in PRODUCT_TYPES:
+            flash("Please complete every field and choose a product type.", "error")
         else:
+            db = get_db()
             try:
-                db = get_db()
                 cursor = db.execute(
                     """
-                    INSERT INTO listings (user_id,seller_name,title,category,price,description,images_json,created_at,status)
-                    VALUES (?,?,?,?,?,?,?,?,?)
+                    INSERT INTO partner_applications (
+                        user_id, kind, full_name, email, contact, country,
+                        product_name, product_type, created_at, status
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?)
                     RETURNING id
                     """,
                     (
                         user["id"],
-                        user["name"],
-                        title,
-                        category,
-                        price,
-                        description,
-                        "[]",
+                        "seller",
+                        fields["full_name"],
+                        fields["email"],
+                        fields["contact"],
+                        fields["country"],
+                        fields["product_name"],
+                        fields["product_type"],
                         datetime.utcnow().isoformat(),
                         "pending",
                     ),
                 )
-                listing_id = cursor.fetchone()["id"]
-                images = save_listing_images(listing_id)
-                if len(images) < 1:
-                    db.execute("DELETE FROM listings WHERE id=?", (listing_id,))
-                    db.commit()
-                    flash("Please upload at least one product image.", "error")
-                else:
-                    db.execute("UPDATE listings SET images_json=? WHERE id=?", (json.dumps(images), listing_id))
-                    db.commit()
-                    flash("Your listing has been submitted for review.", "success")
-                    return redirect(url_for("sell"))
+                application_id = cursor.fetchone()["id"]
+                save_partner_images(application_id)
+                db.commit()
+                flash("Your application was submitted. Please wait for admin approval.", "success")
+                return redirect(url_for("sell"))
             except ValueError as error:
+                rollback_db()
                 flash(str(error), "error")
-    listings = [
-        listing_view(row)
-        for row in get_db().execute("SELECT * FROM listings WHERE user_id=? ORDER BY id DESC", (user["id"],)).fetchall()
-    ]
-    return render_template("sell.html", categories=categories, user=user, listings=listings)
+            except IntegrityError as error:
+                rollback_db()
+                flash(friendly_product_error(error), "error")
+    return render_template(
+        "sell_seller.html",
+        user=user,
+        product_types=PRODUCT_TYPES,
+        countries=ZONE_NAMES,
+    )
+
+
+@app.route("/sell/dropship", methods=["GET", "POST"])
+@login_required
+def sell_dropship():
+    user = current_user()
+    if request.method == "POST":
+        fields = {
+            "interest": request.form.get("interest", "").strip()[:300],
+            "full_name": request.form.get("full_name", "").strip()[:100],
+            "sell_country": request.form.get("sell_country", "").strip()[:80],
+            "platforms": request.form.get("platforms", "").strip()[:200],
+            "store_link": request.form.get("store_link", "").strip()[:400],
+            "email": request.form.get("email", "").strip()[:120],
+            "contact": request.form.get("contact", "").strip()[:40],
+            "country": request.form.get("country", "").strip()[:80] or request.form.get("sell_country", "").strip()[:80],
+        }
+        required = ("interest", "full_name", "sell_country", "platforms", "email", "contact")
+        if any(not fields[key] for key in required):
+            flash("Please complete every required field.", "error")
+        else:
+            db = get_db()
+            try:
+                db.execute(
+                    """
+                    INSERT INTO partner_applications (
+                        user_id, kind, full_name, email, contact, country,
+                        interest, sell_country, platforms, store_link, created_at, status
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        user["id"],
+                        "dropshipper",
+                        fields["full_name"],
+                        fields["email"],
+                        fields["contact"],
+                        fields["country"] or fields["sell_country"],
+                        fields["interest"],
+                        fields["sell_country"],
+                        fields["platforms"],
+                        fields["store_link"],
+                        datetime.utcnow().isoformat(),
+                        "pending",
+                    ),
+                )
+                db.commit()
+                flash("Your dropshipper application was submitted. Please wait for admin approval.", "success")
+                return redirect(url_for("sell"))
+            except IntegrityError as error:
+                rollback_db()
+                flash(friendly_product_error(error), "error")
+    return render_template("sell_dropship.html", user=user, countries=ZONE_NAMES)
 
 
 @app.route("/contact", methods=["GET", "POST"])
@@ -2021,10 +2582,12 @@ def admin_logout():
 @admin_required
 def admin_dashboard():
     db = get_db()
+    order_count = db.execute("SELECT COUNT(*) AS n FROM orders").fetchone()["n"]
     return render_template(
         "admin_dashboard.html",
         products=[product(row) for row in db.execute("SELECT * FROM products ORDER BY id DESC").fetchall()],
         orders=db.execute("SELECT * FROM orders ORDER BY id DESC LIMIT 20").fetchall(),
+        order_count=order_count,
         reviews=db.execute(
             """
             SELECT reviews.*, products.name AS product_name
@@ -2037,6 +2600,67 @@ def admin_dashboard():
         categories=db.execute("SELECT * FROM categories ORDER BY name").fetchall(),
         shipping_zones=load_shipping_zones(),
         faqs=db.execute("SELECT * FROM faqs ORDER BY sort_order, id").fetchall(),
+    )
+
+
+@app.get("/admin/orders")
+@admin_required
+def admin_orders():
+    db = get_db()
+    query = (request.args.get("q") or "").strip()
+    if query:
+        like = f"%{query}%"
+        rows = db.execute(
+            """
+            SELECT * FROM orders
+            WHERE CAST(id AS TEXT) = ?
+               OR CAST(id AS TEXT) ILIKE ?
+               OR customer_name ILIKE ?
+               OR email ILIKE ?
+            ORDER BY id DESC
+            """,
+            (query, like, like, like),
+        ).fetchall()
+    else:
+        rows = db.execute("SELECT * FROM orders ORDER BY id DESC").fetchall()
+    return render_template(
+        "admin_orders.html",
+        orders=[order_record(row) for row in rows],
+        query=query,
+        order_count=db.execute("SELECT COUNT(*) AS n FROM orders").fetchone()["n"],
+    )
+
+
+@app.route("/admin/orders/<int:order_id>", methods=["GET", "POST"])
+@admin_required
+def admin_order_view(order_id):
+    db = get_db()
+    row = db.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
+    if not row:
+        abort(404)
+    if request.method == "POST":
+        status = (request.form.get("status") or "").strip()
+        carrier = (request.form.get("tracking_carrier") or "").strip().lower()
+        number = (request.form.get("tracking_number") or "").strip()[:80]
+        if carrier and carrier not in TRACKING_CARRIERS:
+            carrier = ""
+        if status not in ORDER_STATUSES:
+            flash("Choose a valid order status.", "error")
+        elif status == "shipped" and (not carrier or not number):
+            flash("Shipped orders need a DHL or Hermes tracking number.", "error")
+        else:
+            db.execute(
+                "UPDATE orders SET status=?, tracking_carrier=?, tracking_number=? WHERE id=?",
+                (status, carrier or None, number, order_id),
+            )
+            db.commit()
+            flash("Order status updated.", "success")
+            return redirect(url_for("admin_order_view", order_id=order_id))
+    return render_template(
+        "admin_order_view.html",
+        order=order_record(row),
+        statuses=ORDER_STATUSES,
+        carriers=TRACKING_CARRIERS,
     )
 
 
@@ -2061,6 +2685,40 @@ def admin_listing_reject(listing_id):
     get_db().commit()
     flash("Listing rejected.", "success")
     return redirect(url_for("admin_dashboard"))
+
+
+@app.get("/admin/partners")
+@admin_required
+def admin_partners():
+    applications = [
+        partner_application_view(row)
+        for row in get_db().execute("SELECT * FROM partner_applications ORDER BY id DESC").fetchall()
+    ]
+    return render_template("admin_partners.html", applications=applications)
+
+
+@app.post("/admin/partners/<int:application_id>/approve")
+@admin_required
+def admin_partner_approve(application_id):
+    get_db().execute(
+        "UPDATE partner_applications SET status=?, reviewed_at=? WHERE id=?",
+        ("approved", datetime.utcnow().isoformat(), application_id),
+    )
+    get_db().commit()
+    flash("Partner application approved.", "success")
+    return redirect(url_for("admin_partners"))
+
+
+@app.post("/admin/partners/<int:application_id>/reject")
+@admin_required
+def admin_partner_reject(application_id):
+    get_db().execute(
+        "UPDATE partner_applications SET status=?, reviewed_at=? WHERE id=?",
+        ("rejected", datetime.utcnow().isoformat(), application_id),
+    )
+    get_db().commit()
+    flash("Partner application rejected.", "success")
+    return redirect(url_for("admin_partners"))
 
 
 @app.route("/admin/faqs", methods=["GET", "POST"])
@@ -2265,7 +2923,7 @@ def handle_sub_category_form():
     if action == "add":
         product_type = request.form.get("product_type", "").strip()
         if product_type not in PRODUCT_TYPES:
-            flash("Choose Clothes, Shoes, or Accessories for the sub category.", "error")
+            flash("Choose Clothes, Shoes, Accessories, or Others for the sub category.", "error")
             return
         try:
             save_named_category("sub_categories", request.form.get("name"), {"product_type": product_type})
@@ -2345,10 +3003,6 @@ def save_product_from_form(product_id=None):
         price_eur = 0
     price = round(price_eur * EUR_TO_STORE, 2)
     try:
-        discount_percent = float(request.form.get("discount_percent", 0) or 0)
-    except ValueError:
-        discount_percent = 0
-    try:
         weight = float(request.form.get("weight", 0) or 0)
     except ValueError:
         weight = 0
@@ -2361,10 +3015,6 @@ def save_product_from_form(product_id=None):
     except ValueError:
         pakistan_price = 0
     try:
-        pakistan_discount_percent = float(request.form.get("pakistan_discount_percent", 0) or 0)
-    except ValueError:
-        pakistan_discount_percent = 0
-    try:
         rating = float(request.form.get("rating", 0) or 0)
     except ValueError:
         rating = 0
@@ -2372,8 +3022,6 @@ def save_product_from_form(product_id=None):
         likes = int(float(request.form.get("likes", 0) or 0))
     except ValueError:
         likes = 0
-    discount_percent = max(0.0, min(100.0, discount_percent))
-    pakistan_discount_percent = max(0.0, min(100.0, pakistan_discount_percent))
     weight = max(0.0, weight)
     packing_weight = max(0.0, packing_weight)
     pakistan_price = max(0.0, pakistan_price)
@@ -2381,6 +3029,7 @@ def save_product_from_form(product_id=None):
     likes = max(0, likes)
     featured = 1 if request.form.get("featured") else 0
     deal_of_week = 1 if request.form.get("deal_of_week") else 0
+    volume_discounts = parse_volume_discounts_form()
     stock = sum(entry["quantity"] for entry in color_rows)
     allowed_subs = load_sub_categories().get(fields["product_type"], [])
     if (
@@ -2399,7 +3048,7 @@ def save_product_from_form(product_id=None):
     ):
         raise ValueError("Complete name, SKU, condition, categories, product type, size, description, price, colours, and stock.")
     if fields["product_type"] not in PRODUCT_TYPES:
-        raise ValueError("Choose Clothes, Shoes, or Accessories.")
+        raise ValueError("Choose Clothes, Shoes, Accessories, or Others.")
     if fields["main_category"] not in load_main_categories():
         raise ValueError("Choose a valid main category.")
     if fields["sub_category"] not in allowed_subs:
@@ -2413,6 +3062,9 @@ def save_product_from_form(product_id=None):
     category = fields["sub_category"]
     listed_by = current_listing_owner()
     db = get_db()
+    sku_owner = db.execute("SELECT id FROM products WHERE sku=?", (fields["sku"],)).fetchone()
+    if sku_owner and (product_id is None or sku_owner["id"] != product_id):
+        raise ValueError(f"SKU {fields['sku']} is already used by another product. Choose a unique SKU.")
     colors_legacy = ",".join(entry["name"] for entry in color_rows)
     sizes_legacy = ",".join(size_rows)
     extra_fields = (
@@ -2434,8 +3086,8 @@ def save_product_from_form(product_id=None):
                 description,stock,active,colors_json,sizes_json,amazon_url,etsy_url,ebay_url,
                 discount_percent,weight,shipping_json,pakistan_price,pakistan_discount_percent,
                 condition,main_category,sub_category,product_type,size_group,packing_weight,region_visibility,
-                product_tags,product_hashtags,featured,deal_of_week,listed_by
-            ) VALUES (?,?,?,?,0,?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                product_tags,product_hashtags,featured,deal_of_week,listed_by,volume_discounts
+            ) VALUES (?,?,?,?,0,?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             RETURNING id
             """,
             (
@@ -2455,15 +3107,16 @@ def save_product_from_form(product_id=None):
                 marketplace["amazon_url"],
                 marketplace["etsy_url"],
                 marketplace["ebay_url"],
-                discount_percent,
+                0,
                 weight,
                 json.dumps(shipping_rows),
                 pakistan_price,
-                pakistan_discount_percent,
+                0,
                 *extra_fields,
                 featured,
                 deal_of_week,
                 listed_by,
+                json.dumps(volume_discounts),
             ),
         )
         product_id = cursor.fetchone()["id"]
@@ -2477,7 +3130,7 @@ def save_product_from_form(product_id=None):
                 amazon_url=?, etsy_url=?, ebay_url=?, discount_percent=?, weight=?, shipping_json=?,
                 pakistan_price=?, pakistan_discount_percent=?, condition=?, main_category=?,
                 sub_category=?, product_type=?, size_group=?, packing_weight=?, region_visibility=?,
-                product_tags=?, product_hashtags=?, featured=?, deal_of_week=?
+                product_tags=?, product_hashtags=?, featured=?, deal_of_week=?, volume_discounts=?
             WHERE id=?
             """,
             (
@@ -2497,21 +3150,22 @@ def save_product_from_form(product_id=None):
                 marketplace["amazon_url"],
                 marketplace["etsy_url"],
                 marketplace["ebay_url"],
-                discount_percent,
+                0,
                 weight,
                 json.dumps(shipping_rows),
                 pakistan_price,
-                pakistan_discount_percent,
+                0,
                 *extra_fields,
                 featured,
                 deal_of_week,
+                json.dumps(volume_discounts),
                 product_id,
             ),
         )
     if deal_of_week:
         db.execute("UPDATE products SET deal_of_week=0 WHERE id!=?", (product_id,))
+    save_product_images(product_id, fields["sku"], slots=PRODUCT_IMAGE_SLOTS)
     db.commit()
-    save_product_images(fields["sku"], slots=10)
 
 
 def product_form_context(item=None):
@@ -2534,6 +3188,7 @@ def product_form_context(item=None):
         "image_slots": product_image_slots(item),
         "dashboard_url": staff_home(),
         "price_eur": item["price_eur"] if item else "",
+        "volume_slots": volume_form_slots(item.get("volume_discounts") if item else None),
     }
 
 
@@ -2546,7 +3201,8 @@ def admin_product_new():
             flash("Product created successfully.", "success")
             return redirect(url_for("admin_dashboard"))
         except (IntegrityError, ValueError) as error:
-            flash(f"Product was not saved: {error}", "error")
+            rollback_db()
+            flash(f"Product was not saved: {friendly_product_error(error)}", "error")
     return render_template("admin_product_form.html", **product_form_context())
 
 
@@ -2564,7 +3220,8 @@ def admin_product_edit(product_id):
             flash("Product updated successfully.", "success")
             return redirect(url_for("admin_dashboard"))
         except (IntegrityError, ValueError) as error:
-            flash(f"Product was not updated: {error}", "error")
+            rollback_db()
+            flash(f"Product was not updated: {friendly_product_error(error)}", "error")
             item = product(db.execute("SELECT * FROM products WHERE id=?", (product_id,)).fetchone())
     return render_template("admin_product_form.html", **product_form_context(item))
 
@@ -2590,6 +3247,12 @@ def admin_review_delete(review_id):
 @app.errorhandler(404)
 def not_found(_):
     return render_template("404.html"), 404
+
+
+@app.errorhandler(RequestEntityTooLarge)
+def upload_too_large(_):
+    flash("Upload is too large. Use up to 5 images; the listed product must stay within 2 MB after resize.", "error")
+    return redirect(request.referrer or url_for("home")), 413
 
 
 
@@ -2758,6 +3421,7 @@ def admin_listing_new():
             flash("Listing created successfully.", "success")
             return redirect(url_for("admin_listings"))
         except (IntegrityError, ValueError) as error:
+            rollback_db()
             flash(f"Listing was not saved: {error}", "error")
     return render_template("admin_listing_form.html", listing=None)
 
@@ -2775,6 +3439,7 @@ def admin_listing_edit(listing_id):
             flash("Listing updated successfully.", "success")
             return redirect(url_for("admin_listings"))
         except (IntegrityError, ValueError) as error:
+            rollback_db()
             flash(f"Listing was not updated: {error}", "error")
             row = db.execute("SELECT * FROM product_listings WHERE id=?", (listing_id,)).fetchone()
     return render_template("admin_listing_form.html", listing=row)
@@ -2945,7 +3610,8 @@ def pl_listing_new():
             flash("Product created successfully.", "success")
             return redirect(url_for("pl_dashboard"))
         except (IntegrityError, ValueError) as error:
-            flash(f"Product was not saved: {error}", "error")
+            rollback_db()
+            flash(f"Product was not saved: {friendly_product_error(error)}", "error")
     return render_template("admin_product_form.html", **product_form_context())
 
 
@@ -2960,7 +3626,8 @@ def pl_listing_edit(product_id):
             flash("Product updated successfully.", "success")
             return redirect(url_for("pl_dashboard"))
         except (IntegrityError, ValueError) as error:
-            flash(f"Product was not updated: {error}", "error")
+            rollback_db()
+            flash(f"Product was not updated: {friendly_product_error(error)}", "error")
             item = product(fetch_pl_owned_product(product_id))
     return render_template("admin_product_form.html", **product_form_context(item))
 

@@ -1,0 +1,38 @@
+{% extends 'base.html' %}
+{% block title %}Dropshipper application | AR Shopping World{% endblock %}
+{% block content %}
+<main class="max-w-2xl mx-auto px-4 py-10 w-full">
+  <form method="post" class="bg-white border border-red-100 rounded-3xl p-7 space-y-4">
+    <h1 class="text-2xl font-black">Sell our products as a dropshipper</h1>
+    <p class="text-sm text-slate-500">Submit this form and wait for admin approval.</p>
+    <label class="block text-xs font-bold text-slate-500">In which products are you interested?
+      <textarea required name="interest" maxlength="300" rows="3" class="w-full border rounded-xl p-3 text-sm mt-1"></textarea>
+    </label>
+    <label class="block text-xs font-bold text-slate-500">First and last name
+      <input required name="full_name" maxlength="100" value="{{ user.name or '' }}" class="w-full border rounded-xl p-3 text-sm mt-1">
+    </label>
+    <label class="block text-xs font-bold text-slate-500">Country where you want to sell
+      <input required name="sell_country" maxlength="80" list="country-options" class="w-full border rounded-xl p-3 text-sm mt-1">
+    </label>
+    <datalist id="country-options">
+      {% for country in countries %}<option value="{{ country }}">{% endfor %}
+    </datalist>
+    <label class="block text-xs font-bold text-slate-500">On which platforms do you want to sell?
+      <input required name="platforms" maxlength="200" placeholder="e.g. eBay, Amazon, own shop" class="w-full border rounded-xl p-3 text-sm mt-1">
+    </label>
+    <label class="block text-xs font-bold text-slate-500">Store link / previous experience (optional)
+      <input name="store_link" maxlength="400" class="w-full border rounded-xl p-3 text-sm mt-1">
+    </label>
+    <label class="block text-xs font-bold text-slate-500">Email address
+      <input required type="email" name="email" maxlength="120" value="{{ user.email or '' }}" class="w-full border rounded-xl p-3 text-sm mt-1">
+    </label>
+    <label class="block text-xs font-bold text-slate-500">Contact / WhatsApp number
+      <input required name="contact" maxlength="40" class="w-full border rounded-xl p-3 text-sm mt-1">
+    </label>
+    <div class="flex gap-3">
+      <button class="bg-red-600 text-white rounded-xl px-6 py-3 text-sm font-bold">Submit</button>
+      <a href="{{ url_for('sell') }}" class="border rounded-xl px-6 py-3 text-sm font-bold">Cancel</a>
+    </div>
+  </form>
+</main>
+{% endblock %}

@@ -24,8 +24,9 @@
         <b>#{{ order.id }} · {{ order.created_at[:10] }}</b>
         <span class="price font-bold" data-pkr="{{ order.total }}"></span>
       </div>
-      <p class="text-xs text-slate-500 mt-1">{{ order.country }} · {{ order.payment_method }} · {{ order.currency }}</p>
-      {% for item in order.items %}
+      <p class="text-xs text-slate-500 mt-1">{{ order.country }} · {{ order.payment_label }} · {{ order.currency }}{% if order.tax %} · incl. {{ tax_percent }}% product tax{% endif %}</p>
+      {% include '_order_tracking.html' %}
+      {% for item in order.line_items %}
       <p class="text-xs text-slate-600 mt-1">{{ item.get('quantity', 1) }} × {{ item.get('name', 'Item') }}{% if item.get('selected_size') %} · {{ item.selected_size }}{% endif %}{% if item.get('selected_color') %} · {{ item.selected_color }}{% endif %}</p>
       {% endfor %}
     </article>

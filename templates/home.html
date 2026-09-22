@@ -38,7 +38,8 @@
     <div>
       <small class="text-red-300 font-bold">DEAL OF THE WEEK</small>
       <h2 class="text-2xl font-black">{{ deal.name }}</h2>
-      <p class="price text-red-100" data-pkr="{{ deal.display_price }}"></p>
+      <p class="price text-red-100" data-pkr="{{ deal.display_price_with_tax }}"></p>
+      <p class="text-[11px] text-red-200 mt-1">incl. {{ tax_percent }}% tax</p>
     </div>
     <a class="bg-red-600 px-4 py-3 rounded-xl font-bold text-xs" href="{{ url_for('product_detail',product_id=deal.id) }}">View deal</a>
     {% endif %}
